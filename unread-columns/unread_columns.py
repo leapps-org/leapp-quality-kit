@@ -111,16 +111,20 @@ def table_columns(db, table):
 
 
 def column_counts(db, table, unread, read):
-    """Counts for each unread column. Never returns a value from the table."""
+    """Counts for each unread column. Never returns a value from the table.
+
+    Values are compared byte for byte (COLLATE BINARY), so a column declared with an app's own
+    collation, such as Android contacts' PHONEBOOK, is still counted."""
     total = db.execute(f'SELECT count(*) FROM {quote(table)}').fetchone()[0]
     out = {}
     for column in unread:
         non_null, distinct = db.execute(
-            f'SELECT count({quote(column)}), count(DISTINCT {quote(column)}) FROM {quote(table)}').fetchone()
+            f'SELECT count({quote(column)}), count(DISTINCT {quote(column)} COLLATE BINARY) FROM {quote(table)}'
+        ).fetchone()
         same_as = []
         if 0 < total <= EQUALITY_ROW_LIMIT:
             for other in read:
-                equal = db.execute(f'SELECT count(*) FROM {quote(table)} WHERE {quote(column)} IS {quote(other)}'
+                equal = db.execute(f'SELECT count(*) FROM {quote(table)} WHERE {quote(column)} COLLATE BINARY IS {quote(other)}'
                                    ).fetchone()[0]
                 if equal == total:
                     same_as.append(other)

@@ -30,7 +30,8 @@ read are the unread list. Reads of the core's own output (the LAVA database, the
 left out.
 
 For each unread column it reports counts only: rows, rows where the column is set, distinct values,
-and any read column of the same table it equals on every row. No value from the evidence is
+and any read column of the same table it equals on every row. Values are compared byte for byte, so
+a column declared with an app's own collation is still counted. No value from the evidence is
 written. The store is named by its file name only when a module path pattern names that file
 literally; any other store is "store 1", "store 2", because a file name matched by a wildcard can
 carry an account or contact id. Table and column names are written as the store has them. A store

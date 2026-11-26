@@ -94,7 +94,9 @@ def make_store(folder):
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA wal_autocheckpoint=0')
     db.execute('CREATE TABLE msgs (id INTEGER PRIMARY KEY, body TEXT, flag INTEGER, copy_id INTEGER, note TEXT)')
-    db.execute('CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, secret TEXT)')
+    # An app collation the reader does not have, as Android contacts declares PHONEBOOK.
+    db.create_collation('APPSORT', lambda a, b: (a > b) - (a < b))
+    db.execute('CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, secret TEXT COLLATE APPSORT)')
     db.executemany('INSERT INTO msgs VALUES (?, ?, 1, ?, NULL)', [(i, f'm{i}', i) for i in range(1, 4)])
     db.executemany('INSERT INTO people VALUES (?, ?, ?)', [(1, 'a', PLANTED), (2, 'b', 'x')])
     db.commit()
@@ -173,6 +175,9 @@ class SyntheticRun(unittest.TestCase):
         t = self.table('demo_helper', 'people')
         self.assertEqual(sorted(t['unread']), ['id', 'secret'])
         self.assertFalse(t['whole_row_read'])
+        # secret is declared with a collation this reader lacks and is still counted.
+        self.assertEqual(t['unread']['secret']['distinct'], 2)
+        self.assertEqual(self.result['errors'], [])
 
     def test_core_output_database_is_left_out(self):
         self.assertEqual(self.result['skipped_connections'], 1)
