@@ -43,7 +43,20 @@ any of the five repo lists (an empty list is fine), or if `kit_config` cannot be
 merge-shaped command is denied. Ordinary commands still run.
 
 Run the tests with `python3 -m unittest discover -s <folder>` for `review-gate`, `notes-audit`,
-`number-recheck` and `mac-pr-reviewer`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
+`number-recheck`, `mac-pr-reviewer` and `deploy`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
+
+## Keeping a deployed copy current
+
+If the merge guard and gate run from a deployed copy, `deploy/refresh.py` keeps that copy at the tip of
+`main` with no one having to remember. Run it from a launch agent or cron entry every few minutes. It
+fetches, refuses a tip that does not descend from the deployed commit, exports the tip into its own
+folder, runs every test suite there, and only if they all pass repoints the deployed symlink with one
+rename. Any failure leaves the deployed copy where it was, writes `<work_dir>/deploy/refresh.log` and
+posts a macOS notification. The previous two releases stay for a one-rename rollback. Set the `deploy`
+block in the config; `python3 deploy/refresh.py --status` shows the deployed commit and the tip.
+
+When the gate runs from a deployed copy that has been behind `main` for more than an hour, it prints a
+warning (its answer does not change), so a refresh that stopped shows up at the next merge.
 
 ## The review gate
 
