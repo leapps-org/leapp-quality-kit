@@ -11,6 +11,10 @@
   "mac_review_store": "~/Library/Application Support/{repo}/PR Review/reviews.sqlite3",
   "attestations_dir": "~/.config/leapp-quality-kit/attestations",
   "app_review_setup": "",
+  "mac_review_upstream_owners": ["your-github-login"],
+  "mac_review_guides": {
+    "iLEAPP": [".claude/skills/leapp-new-artifact/SKILL.md", "admin/docs/module_updates.md"]
+  },
 
   "repos_dir": "~/src",
   "python": "python3",
