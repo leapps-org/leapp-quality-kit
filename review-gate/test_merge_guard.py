@@ -201,7 +201,26 @@ class RepoOwners(unittest.TestCase):
         self.assertTrue(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-org/quality-kit/pull/2'}))
 
     def test_a_bad_owner_map_denies(self):
-        self.assertIn('"deny"', run_main(FailsClosed.MERGE, {**self.OWNED, 'repo_owners': {'quality-kit': 'example org'}}))
+        for bad in ({'quality-kit': 'example org'}, [], '', 0, None, ['quality-kit']):
+            with self.subTest(bad=bad):
+                self.assertIn('"deny"', run_main(FailsClosed.MERGE, {**self.OWNED, 'repo_owners': bad}))
+
+    def test_gate_and_guard_agree_on_a_mixed_case_key(self):
+        import review_gate
+        mixed = {**self.OWNED, 'repo_owners': {'Quality-Kit': 'example-org'}}
+        guard.configure(mixed)
+        review_gate.configure(mixed)
+        try:
+            self.assertEqual(guard.repo_name('example-org/quality-kit'), 'quality-kit')
+            self.assertEqual(review_gate.owner_for('quality-kit'), 'example-org')
+        finally:
+            review_gate.configure(CONFIG)
+
+    def test_the_gate_refuses_a_bad_owner_map(self):
+        import review_gate
+        with patch.object(review_gate.kit_config, 'load', return_value={**self.OWNED, 'repo_owners': []}):
+            self.assertEqual(review_gate.main(['ALEAPP', '2']), 2)
+        review_gate.configure(CONFIG)
 
     def test_the_gate_uses_the_same_owner(self):
         import review_gate

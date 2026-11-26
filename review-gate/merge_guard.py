@@ -49,7 +49,9 @@ def configure(data):
         repos |= set(value)
     if not repos:
         raise kit_config.ConfigError(f'no repos are listed in {kit_config.path_of()}')
-    owners = data.get('repo_owners') or {}
+    # Absent means no overrides. Any other value must be a map, or a covered repo under another account
+    # would silently fall back to github_owner and its merges would pass with no gate run.
+    owners = data.get('repo_owners', {})
     if not isinstance(owners, dict) or not all(isinstance(k, str) and NAME.fullmatch(k) and isinstance(v, str)
                                                and NAME.fullmatch(v) for k, v in owners.items()):
         raise kit_config.ConfigError(f'"repo_owners" must map repo names to GitHub logins in {kit_config.path_of()}')

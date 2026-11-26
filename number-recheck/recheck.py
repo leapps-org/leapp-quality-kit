@@ -275,7 +275,13 @@ def main():
         GITHUB = kit_config.expand(kit_config.need(config, "repos_dir"))
         CORPUS_ROOTS = kit_config.expand(kit_config.need(config, "corpus_roots"))
         work_dir = kit_config.expand(kit_config.need(config, "work_dir"))
-        owner = kit_config.need(config, "github_owner") if args.file_issues else None
+        owner = None
+        if args.file_issues:
+            # The same owner lookup the review gate uses: github_owner unless repo_owners names another.
+            owners = config.get("repo_owners", {})
+            if not isinstance(owners, dict):
+                raise kit_config.ConfigError(f'"repo_owners" must map repo names to GitHub logins in {kit_config.path_of()}')
+            owner = {str(k).lower(): v for k, v in owners.items()}.get(args.core.lower()) or kit_config.need(config, "github_owner")
     except kit_config.ConfigError as error:
         print(f"COULD NOT CHECK: {error}", file=sys.stderr)
         return 2

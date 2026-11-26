@@ -38,7 +38,7 @@ REPO_OWNERS = {}
 
 def owner_for(repo):
     """The account a covered repo lives under: github_owner unless repo_owners names another."""
-    return REPO_OWNERS.get(repo, OWNER)
+    return REPO_OWNERS.get(repo.lower(), OWNER)
 
 
 def configure(data):
@@ -61,7 +61,10 @@ def configure(data):
         HOLDS[(repo, int(number))] = reason
     MAC_STORE = data.get('mac_review_store') or '~/Library/Application Support/{repo}/PR Review/reviews.sqlite3'
     # Repos that live under another account than github_owner, as {"repo": "account"}.
-    REPO_OWNERS = {str(name): str(owner) for name, owner in (data.get('repo_owners') or {}).items()}
+    owners = data.get('repo_owners', {})
+    if not isinstance(owners, dict):
+        raise kit_config.ConfigError(f'"repo_owners" must map repo names to GitHub logins in {kit_config.path_of()}')
+    REPO_OWNERS = {str(name).lower(): str(owner) for name, owner in owners.items()}
     # Where --mac-report-read and --owner-approved are recorded per commit. Default: beside this file.
     ATTESTATIONS = kit_config.expand(data['attestations_dir']) if data.get('attestations_dir') else DEFAULT_ATTESTATIONS
 
