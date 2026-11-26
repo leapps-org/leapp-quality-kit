@@ -1,0 +1,38 @@
+name: Flag PR for Mac review
+
+# Copy into .github/workflows/ of each reviewed repository and set these repository variables:
+#   MAC_REVIEW_OWNER_ID     the owner's numeric GitHub user id
+#   MAC_REVIEW_OWNER_LOGIN  the owner's GitHub login
+#   MAC_REVIEW_OWNER_TOO    "true" where the owner's own PRs are reviewed too
+#                           (the repositories in owner_mac_review_repos)
+# Keep the workflow name: the worker recognises this job by it.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  flag:
+    # Match the PR author even when somebody else pushes or reopens the PR.
+    if: >-
+      (github.event.action != 'labeled' || github.event.label.name == 'request-mac-review') &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.id > 0 && github.event.pull_request.user.login != '' &&
+      vars.MAC_REVIEW_OWNER_ID != '' && vars.MAC_REVIEW_OWNER_LOGIN != '' &&
+      (vars.MAC_REVIEW_OWNER_TOO == 'true' ||
+       (format('{0}', github.event.pull_request.user.id) != vars.MAC_REVIEW_OWNER_ID &&
+        github.event.pull_request.user.login != vars.MAC_REVIEW_OWNER_LOGIN))
+    runs-on: ubuntu-latest
+    steps:
+      # Only the PR number is used. Never check out or run the PR here.
+      - name: Enroll the PR in local review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          printf '%s' '{"labels":["mac-review"]}' |
+            gh api --method POST "repos/$REPO/issues/$PR_NUMBER/labels" --input - --silent

@@ -3,8 +3,8 @@
 Copies of the tools I run around LEAPP artifact work that live outside the LEAPP repositories, with
 my account, repositories and corpus paths moved into one config file.
 The checks inside each core (`admin/scripts/check_*.py`, `validate_sample_data.py`, the test-case
-harness) are in the cores. This repository holds the rest: the merge gate, the notes audit, the
-number re-check and the auditor agent.
+harness) are in the cores. This repository holds the rest: the merge gate, the Mac PR reviewer,
+the notes audit, the number re-check and the auditor agent.
 
 They are written for the LEAPPs (iLEAPP, ALEAPP, RLEAPP, VLEAPP, DLEAPP). Expect to read the code and
 adapt it to your own tool.
@@ -12,6 +12,7 @@ adapt it to your own tool.
 | Folder | What it does | Needs |
 |---|---|---|
 | `review-gate/` | Decides whether a PR may merge: checks, reviewer state on the exact head commit, review threads, holds and contributor approval. A wait script reruns it, and a Claude Code hook refuses any merge command it has not passed. | `gh`, Python 3.10+ |
+| `mac-pr-reviewer/` | Reviews PRs on the Mac with a sandboxed Codex model, posts short inline findings on the PR and keeps the full report local. Its review store is what the gate's Mac route reads. | macOS, `gh`, the ChatGPT app's Codex client, Python 3.10+ |
 | `notes-audit/` | Audits the examiner-facing text of merged modules: one auditor per module, then a blind checker that sees the flagged statements mixed with unflagged controls. | Claude Code (Workflow tool), a corpus, a core checkout |
 | `number-recheck/` | Re-runs every `sample_data` row count a core declares against `origin/main` and sorts each corpus key into matched, drifted or could not check. | A corpus with `samples.json` registries, a core checkout |
 | `agents/` | The `leapp-notes-auditor` agent: an independent read of an artifact's description, notes and headers against the code and the run output. | Claude Code |
@@ -35,7 +36,9 @@ adapt it to your own tool.
 }
 ```
 
-Run the tests with `python3 -m unittest discover -s review-gate`.
+Run the tests with `python3 -m unittest discover -s review-gate` and
+`python3 -m unittest discover -s mac-pr-reviewer`. For the Mac reviewer, see
+`mac-pr-reviewer/README.md`.
 
 ## The review gate
 
@@ -52,13 +55,12 @@ contributor PR, a held PR, or a high-severity thread someone other than the revi
 something to act on. It never merges and never passes those two flags.
 
 The Greptile route reads Greptile's check run and its review threads. The Mac route reads a local
-SQLite store of finished reviews (`mac_review_store` in the config). The Mac reviewer itself is not
-in this repository yet.
+SQLite store of finished reviews (`mac_review_store` in the config), which `mac-pr-reviewer/` writes.
 
 ## What is not here
 
-- The Mac PR reviewer (a local job that reviews PRs with a sandboxed model and keeps the full report
-  private).
+- The Mac reviewer's private inbox delivery and its route for the desktop apps, probes, readers and
+  website (see `mac-pr-reviewer/README.md`).
 - The corpus, its registries and anything from them.
 
 ## License
