@@ -1,0 +1,125 @@
+"""The guard must catch every merge spelling and leave ordinary commands alone. Nothing here merges."""
+import importlib.util
+import pathlib
+import tempfile
+import unittest
+from unittest.mock import patch
+
+PATH = pathlib.Path(__file__).resolve().with_name('merge_guard.py')
+SPEC = importlib.util.spec_from_file_location('merge_guard', PATH)
+guard = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(guard)
+CONFIG = {'github_owner': 'example-owner', 'owner_id': 1000,
+          'greptile_repos': ['iLEAPP', 'ALEAPP', 'RLEAPP', 'VLEAPP'],
+          'mac_review_repos': ['iLEAPP', 'ALEAPP', 'RLEAPP', 'VLEAPP', 'DLEAPP'],
+          'owner_mac_review_repos': ['DLEAPP'],
+          'app_review_repos': ['GLEAPP', 'MLEAPP', 'qnxprobe', 'dpapiprobe', 'sqlite-wal', 'cblite-parser'],
+          'checks_only_repos': ['LAVA']}
+guard.configure(CONFIG)
+HEAD = 'a' * 40
+
+
+class Done:
+    def __init__(self, code, text):
+        self.returncode, self.stdout, self.stderr = code, text, ''
+
+
+def gate(code=0):
+    text = f'ALEAPP #5 at {HEAD} (route: greptile)\n' + ('MAY MERGE' if code == 0 else 'BLOCKED\n- open finding')
+    return patch.object(guard.subprocess, 'run', return_value=Done(code, text))
+
+
+class Guard(unittest.TestCase):
+    def test_blocked_gate_denies_every_spelling(self):
+        spellings = [
+            'gh pr merge 5 --repo example-owner/ALEAPP --merge',
+            'gh pr merge 5 -R example-owner/ALEAPP',
+            'gh pr merge --repo=example-owner/aleapp 5',
+            'gh -R example-owner/ALEAPP pr merge 5' if False else 'gh pr --repo example-owner/ALEAPP merge 5',
+            '/opt/homebrew/bin/gh pr merge 5 --repo example-owner/ALEAPP',
+            'gh pr merge https://github.com/example-owner/ALEAPP/pull/5',
+            'cd /tmp && gh pr merge 5 --repo example-owner/ALEAPP',
+            'true; gh pr merge 5 --repo example-owner/ALEAPP',
+            'GH_TOKEN=x gh pr merge 5 --repo example-owner/ALEAPP',
+            'bash -c "gh pr merge 5 --repo example-owner/ALEAPP"',
+            "bash <<'SH'\ngh pr merge 5 --repo example-owner/ALEAPP\nSH",
+            'gh pr merge 5 \\\n  --repo example-owner/ALEAPP',
+            'if true; then gh pr merge 5 --repo example-owner/ALEAPP; fi',
+        ]
+        with gate(1):
+            for command in spellings:
+                with self.subTest(command=command):
+                    self.assertIn('did not pass', guard.check_command(command, '/tmp') or '')
+
+    def test_pass_needs_the_head_it_checked(self):
+        with gate(0):
+            self.assertIn('--match-head-commit', guard.check_command('gh pr merge 5 --repo example-owner/ALEAPP', '/tmp'))
+            self.assertIn('--match-head-commit', guard.check_command(
+                f'gh pr merge 5 --repo example-owner/ALEAPP --match-head-commit {"b" * 40}', '/tmp'))
+            self.assertIsNone(guard.check_command(
+                f'gh pr merge 5 --repo example-owner/ALEAPP --merge --delete-branch --match-head-commit {HEAD}', '/tmp'))
+
+    def test_bypass_routes_are_denied(self):
+        for command in ('gh api -X PUT repos/example-owner/ALEAPP/pulls/5/merge',
+                        "gh api graphql -f query='mutation{mergePullRequest(input:{}){clientMutationId}}'",
+                        'gh pr merge 5 --repo example-owner/ALEAPP --auto',
+                        'gh pr merge $N --repo example-owner/ALEAPP',
+                        'gh pr merge 5 --repo $REPO'):
+            with self.subTest(command=command), gate(0):
+                self.assertTrue(guard.check_command(command, '/tmp'))
+
+    def test_script_with_a_merge_is_denied(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script = pathlib.Path(folder) / 'land.sh'
+            script.write_text('gh pr merge 5 --repo example-owner/ALEAPP\n')
+            for command in (f'bash {script}', f'/bin/bash -e {script}', f'sh "{script}"', f'cd /tmp && {script}',
+                            f'source {script}', f'python3 -I {script}'):
+                with self.subTest(command=command):
+                    self.assertIn('contains a PR merge', guard.check_command(command, folder))
+            for command in (f'cat {script}', f'grep -n merge {script}', f'cp {script} /tmp/x'):
+                with self.subTest(command=command):
+                    self.assertIsNone(guard.check_command(command, folder))
+
+    def test_guard_covers_every_repo_the_gate_knows(self):
+        import review_gate
+        review_gate.configure(CONFIG)
+        self.assertEqual(guard.REPOS, review_gate.KNOWN_REPOS)
+
+    def test_probe_and_reader_merges_are_gated(self):
+        for command in ('gh pr merge 6 --repo example-owner/dpapiprobe --merge',
+                        'gh pr merge 146 --repo example-owner/qnxprobe',
+                        'gh pr merge 3 --repo example-owner/SQLITE-WAL',
+                        'gh pr merge https://github.com/example-owner/cblite-parser/pull/2'):
+            with self.subTest(command=command), gate(1):
+                self.assertIn('did not pass', guard.check_command(command, '/tmp') or '')
+        self.assertTrue(guard.check_auto_merge({'enabled': True,
+                                                'url': 'https://github.com/example-owner/qnxprobe/pull/1'}))
+
+    def test_running_the_guard_itself_is_allowed(self):
+        self.assertIsNone(guard.check_command(f'python3 -I -B {PATH}', '/tmp'))
+
+    def test_other_repos_and_ordinary_commands_pass(self):
+        for command in ('gh pr merge 5 --repo example-owner/appwalk --merge',
+                        'gh pr merge 5 --repo other/ALEAPP',
+                        'gh pr merge --help',
+                        'gh pr view 5 --repo example-owner/ALEAPP',
+                        'gh pr checks 5 --repo example-owner/ALEAPP',
+                        'git merge main',
+                        'echo "run gh pr merge later"',
+                        'grep -rn "gh pr merge" docs',
+                        f'python3 {guard.GATE} ALEAPP 5'):
+            with self.subTest(command=command), patch.object(guard.subprocess, 'run', side_effect=AssertionError):
+                self.assertIsNone(guard.check_command(command, '/tmp'))
+
+    def test_gate_error_fails_closed(self):
+        with patch.object(guard.subprocess, 'run', side_effect=OSError):
+            self.assertIn('could not run', guard.check_command('gh pr merge 5 --repo example-owner/ALEAPP', '/tmp'))
+
+    def test_auto_merge_tool(self):
+        self.assertTrue(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-owner/iLEAPP/pull/1'}))
+        self.assertIsNone(guard.check_auto_merge({'enabled': False, 'url': 'https://github.com/example-owner/iLEAPP/pull/1'}))
+        self.assertIsNone(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-owner/appwalk/pull/1'}))
+
+
+if __name__ == '__main__':
+    unittest.main()

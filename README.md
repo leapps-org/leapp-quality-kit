@@ -1,0 +1,66 @@
+# LEAPP quality kit
+
+Copies of the tools I run around LEAPP artifact work that live outside the LEAPP repositories, with
+my account, repositories and corpus paths moved into one config file.
+The checks inside each core (`admin/scripts/check_*.py`, `validate_sample_data.py`, the test-case
+harness) are in the cores. This repository holds the rest: the merge gate, the notes audit, the
+number re-check and the auditor agent.
+
+They are written for the LEAPPs (iLEAPP, ALEAPP, RLEAPP, VLEAPP, DLEAPP). Expect to read the code and
+adapt it to your own tool.
+
+| Folder | What it does | Needs |
+|---|---|---|
+| `review-gate/` | Decides whether a PR may merge: checks, reviewer state on the exact head commit, review threads, holds and contributor approval. A wait script reruns it, and a Claude Code hook refuses any merge command it has not passed. | `gh`, Python 3.10+ |
+| `notes-audit/` | Audits the examiner-facing text of merged modules: one auditor per module, then a blind checker that sees the flagged statements mixed with unflagged controls. | Claude Code (Workflow tool), a corpus, a core checkout |
+| `number-recheck/` | Re-runs every `sample_data` row count a core declares against `origin/main` and sorts each corpus key into matched, drifted or could not check. | A corpus with `samples.json` registries, a core checkout |
+| `agents/` | The `leapp-notes-auditor` agent: an independent read of an artifact's description, notes and headers against the code and the run output. | Claude Code |
+
+## Setup
+
+1. Copy `config.example.json` to `~/.config/leapp-quality-kit/config.json` (or point
+   `LEAPP_QUALITY_CONFIG` at another path) and fill it in: your GitHub login and numeric user id,
+   which repositories each reviewer covers, any held PRs, where your core checkouts are, where the
+   corpus registries are, and a work folder for output.
+2. For the auditor, copy `agents/leapp-notes-auditor.md` into `~/.claude/agents/`.
+3. For the merge guard, add it as a `PreToolUse` hook in your Claude Code settings:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 /path/to/leapp-quality-kit/review-gate/merge_guard.py"}]}
+    ]
+  }
+}
+```
+
+Run the tests with `python3 -m unittest discover -s review-gate`.
+
+## The review gate
+
+    python3 review-gate/review_gate.py <repo> <pr number>
+
+Exit 0 prints a merge command pinned to the head commit with `--match-head-commit`. Exit 1 lists
+what blocks. Exit 2 means it could not check, which counts as blocked. It never merges or posts.
+
+Two flags record a person's decision for one exact commit: `--mac-report-read <sha>` (the private
+review report was read and addressed) and `--owner-approved <sha>` (the owner approved a
+contributor PR, a held PR, or a high-severity thread someone other than the reviewer resolved).
+
+`wait_gate.py` reruns the gate every five minutes for up to two hours and exits when there is
+something to act on. It never merges and never passes those two flags.
+
+The Greptile route reads Greptile's check run and its review threads. The Mac route reads a local
+SQLite store of finished reviews (`mac_review_store` in the config). The Mac reviewer itself is not
+in this repository yet.
+
+## What is not here
+
+- The Mac PR reviewer (a local job that reviews PRs with a sandboxed model and keeps the full report
+  private).
+- The corpus, its registries and anything from them.
+
+## License
+
+MIT. See `LICENSE`.
