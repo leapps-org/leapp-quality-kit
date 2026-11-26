@@ -106,6 +106,17 @@ class Refresh(unittest.TestCase):
         self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 2)
         self.assertEqual(self.deployed(), old)
 
+    def test_a_git_failure_does_not_echo_the_remote(self):
+        self.cfg['remote'] = 'https://someone:SECRET-TOKEN@127.0.0.1:9/none.git'
+        code, message = refresh.refresh(self.cfg, sys.executable, passing)
+        self.assertEqual(code, 2)
+        self.assertNotIn('SECRET', message)
+
+    def test_an_unopenable_releases_folder_cannot_check(self):
+        self.cfg['releases'].parent.mkdir(parents=True, exist_ok=True)
+        self.cfg['releases'].write_text('not a folder')
+        self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 2)
+
     def test_a_held_lock_skips_the_run(self):
         import fcntl
         self.cfg['releases'].mkdir()
@@ -155,6 +166,19 @@ class Suites(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             failures = refresh.run_tests(pathlib.Path(folder), sys.executable)
         self.assertEqual(sorted(f.split(':')[0] for f in failures), sorted(refresh.SUITES))
+
+    def test_a_suite_with_no_tests_is_a_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            for suite in refresh.SUITES:
+                (root / suite).mkdir()
+                (root / suite / 'test_x.py').write_text(
+                    'import unittest\nclass T(unittest.TestCase):\n    def test(self):\n        pass\n')
+            (root / refresh.SUITES[0] / 'test_x.py').write_text('# tests removed\n')
+            failures = refresh.run_tests(root, sys.executable)
+        # Python 3.12+ exits 5 when nothing ran; 3.10 and 3.11 exit 0, which the "Ran 0 tests" check catches.
+        self.assertEqual(len(failures), 1)
+        self.assertIn(failures[0], (f'{refresh.SUITES[0]}: no tests ran', f'{refresh.SUITES[0]}: exit 5'))
 
     def test_failures_carry_no_suite_output(self):
         with tempfile.TemporaryDirectory() as folder:

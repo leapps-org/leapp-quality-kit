@@ -29,6 +29,7 @@ import datetime
 import fcntl
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import io
@@ -38,6 +39,7 @@ import tarfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import kit_config  # noqa: E402
 
+RAN = re.compile(r'^Ran (\d+) tests? in ', re.M)
 SUITES = ('review-gate', 'notes-audit', 'number-recheck', 'mac-pr-reviewer', 'deploy')
 MARKER = 'DEPLOYED_COMMIT'
 TEST_TIMEOUT = 600
@@ -69,10 +71,17 @@ def settings(data):
 
 
 def git(*args, cwd=None):
-    done = subprocess.run(['git', *args], cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          timeout=300, check=False)
+    """Run git. A failure reports the operation and exit code only: git's stderr can carry a remote URL with
+    credentials, and this text reaches the log and the notification."""
+    try:
+        done = subprocess.run(['git', *args], cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=300, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise CouldNotCheck(f'git {args[0]} timed out') from error
+    except OSError as error:
+        raise CouldNotCheck(f'git could not run ({type(error).__name__})') from error
     if done.returncode != 0:
-        raise CouldNotCheck(f'git {args[0]} failed: {done.stderr.strip()[:300]}')
+        raise CouldNotCheck(f'git {args[0]} failed (exit {done.returncode})')
     return done.stdout.strip()
 
 
@@ -143,6 +152,11 @@ def run_tests(folder, python):
         if done.returncode != 0:
             # Name and exit code only: suite output can echo config values, and this goes to a log and a notification.
             failures.append(f'{suite}: exit {done.returncode}')
+            continue
+        # unittest exits 0 when discovery finds nothing, so an emptied suite must count as a failure too.
+        ran = RAN.search(done.stderr or '')
+        if not ran or int(ran.group(1)) == 0:
+            failures.append(f'{suite}: no tests ran')
     return failures
 
 
@@ -169,9 +183,12 @@ def prune(releases, current, keep):
 
 def refresh(cfg, python, tests=run_tests):
     """One refresh. Returns (exit code, message)."""
-    cfg['releases'].mkdir(parents=True, exist_ok=True)
-    # An advisory lock the OS drops when this process ends, so a crashed or slow run never needs a timeout.
-    lock = open(cfg['releases'] / '.lock', 'a+', encoding='utf-8')  # pylint: disable=consider-using-with
+    try:
+        cfg['releases'].mkdir(parents=True, exist_ok=True)
+        # An advisory lock the OS drops when this process ends, so a crashed or slow run never needs a timeout.
+        lock = open(cfg['releases'] / '.lock', 'a+', encoding='utf-8')  # pylint: disable=consider-using-with
+    except OSError as error:
+        return 2, f'COULD NOT CHECK: the releases folder or its lock could not be opened ({type(error).__name__})'
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -108,8 +108,9 @@ def deploy_lag(data, kit_root=None, now=None, read=None):
         return f'NOTE: could not check whether the deployed kit is current ({type(error).__name__})'
     if sha == deployed or (now or datetime.datetime.now(datetime.timezone.utc)) - when < LAG_LIMIT:
         return None
-    return (f'WARNING: this gate runs from kit {deployed[:8]}, but {branch} has been at {sha[:8]} since '
-            f'{when:%Y-%m-%d %H:%M} UTC. The deploy refresh may have stopped; see <work_dir>/deploy/refresh.log.')
+    return (f'WARNING: this gate runs from kit {deployed[:8]}, but {branch} is at {sha[:8]}, a commit dated '
+            f'{when:%Y-%m-%d %H:%M} UTC. If that stays true, the deploy refresh may have stopped; '
+            'see <work_dir>/deploy/refresh.log.')
 
 
 def gh(*args):
