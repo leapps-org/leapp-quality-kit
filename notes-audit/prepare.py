@@ -91,6 +91,7 @@ def main():
         config = kit_config.load()
         registries = kit_config.need(config, 'core_registries')
         paths = kit_config.notes_audit(config)
+        leak = kit_config.notes_audit_leak(config)
     except kit_config.ConfigError as error:
         sys.exit(f'FAIL {error}')
 
@@ -103,8 +104,11 @@ def main():
     # Kept apart from the findings folder: the blind checkers read this folder, and score.py treats any read
     # of the findings folder as a leak. score.py copies the finished report there.
     out = (a.out or paths['input_dir'] / f'{core} round {a.round}').expanduser()
-    if paths['findings_marker'] in str(out):
-        sys.exit(f"FAIL keep the round folder out of the findings folder ({paths['findings_marker']})")
+    # The same pattern score.py applies to the blind checkers' reads: a round folder it matches would make
+    # every read of the round look like a leak.
+    hit = leak.search(str(out))
+    if hit:
+        sys.exit(f'FAIL the round folder path contains "{hit.group(0)}", which the leak check flags; choose another --out')
     if out.exists():
         sys.exit(f'FAIL output exists: {out}')
 

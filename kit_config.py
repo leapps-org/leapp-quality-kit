@@ -68,5 +68,31 @@ def notes_audit(data):
     marker = next((part.strip() for part in reversed(Path(fixed).parts) if part.strip()), '')
     if len(marker) < 4:
         raise ConfigError(f'"notes_audit.findings_dir" needs a fixed folder name before its first field in {path_of()}')
-    return {'input_dir': expand(text['input_dir']), 'ledger': expand(text['ledger']),
+    input_dir = expand(text['input_dir'])
+    # The marker is searched for in every blind checker's reads, so it must not also name a folder the
+    # round lives under (for example "Downloads" when the findings template starts with a date).
+    if marker.lower() in str(input_dir).lower():
+        raise ConfigError(f'"notes_audit.findings_dir" folder name "{marker}" also appears in the input folder '
+                          f'{input_dir}; give the findings folder its own fixed name in {path_of()}')
+    return {'input_dir': input_dir, 'ledger': expand(text['ledger']),
             'findings_dir': text['findings_dir'], 'findings_marker': marker}
+
+
+def notes_audit_leak(data):
+    """Reads that would let a blind checker see the audit, the kit, transcripts, a local core checkout
+    or the repo's history. Used by score.py on tool calls and by prepare.py on the round folder."""
+    import re
+    paths = notes_audit(data)
+    words = paths['findings_marker'].split()
+    # "LEAPP review" also as LEAPP\ review, LEAPP\ \ review, or a glob that starts with its first word.
+    # Not preceded by a letter or digit, so a report-folder glob such as ALEAPP* is not read as LEAPP*.
+    marker = r'(?<![A-Za-z0-9])' + r'(?:\\?\s+)'.join(re.escape(word) for word in words)
+    glob = (r'(?<![A-Za-z0-9])' + re.escape(words[0]) + r'[*?\[]|') if len(words) > 1 else ''
+    repos_dir = data.get('repos_dir')
+    checkout = (re.escape(expand(repos_dir).name) + r'/[A-Za-z]*LEAPP|') if repos_dir else ''
+    owner = re.escape(str(need(data, 'github_owner')))
+    return re.compile(r'Findings\.md|results\.json|args\.json|round\.json|audited\.json|leapp-quality-kit|'
+                      r'leapp-notes-audit(?!-input)|leapp-review-gate|' + marker + '|' + glob + checkout +
+                      r'journal\.jsonl|\.claude/projects/[^ ]*/(subagents|[0-9a-f-]{36}\.jsonl)|/[A-Za-z]*LEAPP/(\.git|scripts|admin)|'
+                      r'github\.com/' + owner + r'|githubusercontent\.com/' + owner + r'|repos/' + owner + r'/|'
+                      r'gh pr|gh api|gh issue', re.I)

@@ -1,5 +1,4 @@
 """The notes audit's folders and leak check follow the config. Nothing here reads a corpus."""
-import importlib.util
 import pathlib
 import sys
 import unittest
@@ -8,9 +7,6 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import kit_config  # noqa: E402
 
-SPEC = importlib.util.spec_from_file_location('score', HERE / 'score.py')
-score = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(score)
 
 
 class Paths(unittest.TestCase):
@@ -32,21 +28,34 @@ class Paths(unittest.TestCase):
             kit_config.notes_audit({'work_dir': '/w', 'notes_audit': {'findings_dir': '/{date}'}})
 
 
+CONFIG = {'github_owner': 'example-owner', 'work_dir': '/w', 'repos_dir': '~/Documents/GitHub',
+          'notes_audit': {'input_dir': '/d/leapp-notes-audit-input',
+                          'findings_dir': '/d/LEAPP review {date}/Notes audit round {round} ({core})'}}
+
+
 class Leaks(unittest.TestCase):
     def test_the_leak_check_flags_findings_checkouts_and_this_tool(self):
-        leak = score.leak_pattern('example-owner', 'LEAPP review', 'GitHub')
-        for text in ('cat ~/Downloads/LEAPP review 2026-11-26/x', 'ls ~/Documents/GitHub/ALEAPP/README.md',
+        leak = kit_config.notes_audit_leak(CONFIG)
+        for text in ('cat ~/Downloads/LEAPP review 2026-11-26/x', 'ls ~/Downloads/LEAPP\\ review\\ 2026-11-26/',
+                     'ls ~/Downloads/LEAPP*', 'ls ~/Documents/GitHub/ALEAPP/README.md',
                      'cat ~/.claude/workflows/leapp-notes-audit.js', 'cat ~/Tools/leapp-quality-kit/x',
-                     'curl https://github.com/example-owner/ALEAPP', 'gh pr view 5'):
+                     'cat ~/Tools/leapp-review-gate/review_gate.py',
+                     'curl https://github.com/example-owner/ALEAPP', 'curl https://api.github.com/repos/example-owner/ALEAPP',
+                     'curl https://raw.githubusercontent.com/example-owner/ALEAPP/main/x', 'gh pr view 5'):
             with self.subTest(text=text):
                 self.assertTrue(leak.search(text))
 
     def test_the_round_folder_itself_is_not_a_leak(self):
-        leak = score.leak_pattern('example-owner', 'LEAPP review', 'GitHub')
-        for text in ('cat ~/Downloads/leapp-notes-audit-input/ALEAPP round 3/src/scripts/artifacts/a.py',
-                     'sqlite3 run_output/key/_lava_artifacts.db'):
+        leak = kit_config.notes_audit_leak(CONFIG)
+        for text in ('cat /d/leapp-notes-audit-input/ALEAPP round 3/src/scripts/artifacts/a.py',
+                     'sqlite3 run_output/key/_lava_artifacts.db',
+                     'cd "/d/leapp-notes-audit-input/ALEAPP round 3/run_output/key"/ALEAPP*; ls data'):
             with self.subTest(text=text):
                 self.assertIsNone(leak.search(text))
+
+    def test_a_marker_that_names_the_input_folder_is_refused(self):
+        with self.assertRaises(kit_config.ConfigError):
+            kit_config.notes_audit({'work_dir': '/home/Downloads', 'notes_audit': {'findings_dir': '{work_dir}/{date} notes audit'}})
 
 
 if __name__ == '__main__':

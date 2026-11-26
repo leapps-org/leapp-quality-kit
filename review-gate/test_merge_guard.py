@@ -146,6 +146,16 @@ class FailsClosed(unittest.TestCase):
                 with self.subTest(field=field, broken=broken.get(field)):
                     self.assertIn('"deny"', run_main(self.MERGE, broken))
 
+    def test_padded_or_listed_names_deny(self):
+        for broken in ({**CONFIG, 'github_owner': 'example-owner '}, {**CONFIG, 'github_owner': ['example-owner']},
+                       {**CONFIG, 'greptile_repos': [' ALEAPP', 'iLEAPP']}, {**CONFIG, 'greptile_repos': ['example-owner/ALEAPP']}):
+            with self.subTest(broken=broken):
+                self.assertIn('"deny"', run_main(self.MERGE, broken))
+
+    def test_a_script_is_blocked_while_the_config_is_broken(self):
+        broken = {k: v for k, v in CONFIG.items() if k != 'greptile_repos'}
+        self.assertIn('"deny"', run_main({'tool_name': 'Bash', 'tool_input': {'command': './ship.sh'}}, broken))
+
     def test_no_repos_at_all_denies(self):
         empty = {**CONFIG, **{field: [] for field in guard.REPO_LISTS}}
         self.assertIn('"deny"', run_main(self.MERGE, empty))

@@ -26,16 +26,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import kit_config  # noqa: E402
 
-def leak_pattern(owner, findings_marker='notes-audit-findings', repos_dir_name=''):
-    """Reads that would let a blind checker see the audit, this tool, transcripts, a local core checkout
-    or the repo's history."""
-    checkout = (re.escape(repos_dir_name) + r'/[A-Za-z]*LEAPP|') if repos_dir_name else ''
-    return re.compile(r'Findings\.md|results\.json|args\.json|round\.json|audited\.json|leapp-quality-kit|'
-                      r'leapp-notes-audit(?!-input)|' + re.escape(findings_marker) + '|' + checkout +
-                      r'journal\.jsonl|\.claude/projects/[^ ]*/(subagents|[0-9a-f-]{36}\.jsonl)|/[A-Za-z]*LEAPP/(\.git|scripts|admin)|'
-                      r'github\.com/' + re.escape(owner) + r'|gh pr|gh api|gh issue', re.I)
-
-
 def tool_uses(node):
     if isinstance(node, dict):
         if node.get('type') == 'tool_use':
@@ -60,9 +50,7 @@ def main():
     try:
         config = kit_config.load()
         paths = kit_config.notes_audit(config)
-        repos_dir = config.get('repos_dir')
-        LEAK = leak_pattern(kit_config.need(config, 'github_owner'), paths['findings_marker'],
-                            kit_config.expand(repos_dir).name if repos_dir else '')
+        LEAK = kit_config.notes_audit_leak(config)
     except kit_config.ConfigError as error:
         sys.exit(f'FAIL {error}')
     rnd = json.loads((folder / 'round.json').read_text())

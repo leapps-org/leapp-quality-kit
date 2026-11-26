@@ -27,6 +27,8 @@ REPOS = set()
 LOWER = {}
 
 
+# A GitHub login or repo name: no spaces or slashes, so a padded or pasted value cannot hide a repo.
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 REPO_LISTS = ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'app_review_repos', 'checks_only_repos')
 
 
@@ -34,11 +36,14 @@ def configure(data):
     """Every repo list must be present (an empty list is fine). A missing or misspelled key would
     otherwise drop its repos from the guard, and their merges would pass with no gate run."""
     global OWNER, REPOS, LOWER
-    OWNER = str(kit_config.need(data, 'github_owner')).lower()
+    owner = kit_config.need(data, 'github_owner')
+    if not isinstance(owner, str) or not NAME.fullmatch(owner):
+        raise kit_config.ConfigError(f'"github_owner" must be one GitHub login in {kit_config.path_of()}')
+    OWNER = owner.lower()
     repos = set()
     for field in REPO_LISTS:
         value = data.get(field)
-        if not isinstance(value, list) or not all(isinstance(name, str) and name for name in value):
+        if not isinstance(value, list) or not all(isinstance(name, str) and NAME.fullmatch(name) for name in value):
             raise kit_config.ConfigError(f'"{field}" must be a list of repo names in {kit_config.path_of()}')
         repos |= set(value)
     if not repos:
@@ -230,16 +235,21 @@ def main():
         return deny('The merge guard could not read this tool call.')
     tool = payload.get('tool_name', '')
     tool_input = payload.get('tool_input') or {}
+    command = str(tool_input.get('command', ''))
+    # Without a working config the guard cannot tell which repos are covered, so it blocks anything
+    # that could merge: a merge-shaped command, the auto-merge tool, or a script it would have to read.
+    could_merge = tool != 'Bash' or 'merge' in command.lower() or bool(SCRIPT.search(command.replace('\\\n', ' ')))
     if IMPORT_ERROR is not None:
-        if tool != 'Bash' or 'merge' in str(tool_input.get('command', '')).lower():
+        if could_merge:
             return deny(f'The merge guard could not load kit_config ({type(IMPORT_ERROR).__name__}), '
-                        'so this merge is blocked.')
+                        'so this command is blocked until the kit is fixed.')
         return 0
     try:
         configure(kit_config.load())
     except kit_config.ConfigError as error:
-        if tool != 'Bash' or 'merge' in str(tool_input.get('command', '')).lower():
-            return deny(f'The merge guard has no config ({error}), so this merge is blocked.')
+        if could_merge:
+            return deny(f'The merge guard has no usable config ({error}), so this command is blocked '
+                        'until the config is fixed.')
         return 0
     try:
         if tool == 'Bash':
