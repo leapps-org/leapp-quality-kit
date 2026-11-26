@@ -246,6 +246,35 @@ class TracerInProcess(unittest.TestCase):
         db.close()
 
 
+class TracerCases(unittest.TestCase):
+    def reads(self, statements, setup):
+        conn_count = len(trace_sqlite._STATE['connections'])
+        db = trace_sqlite.traced_connect(':memory:')
+        db.executescript(setup)
+        for sql in statements:
+            db.execute(sql).fetchall()
+        db.close()
+        conn = trace_sqlite._STATE['connections'][conn_count]
+        return {column for reads in conn['reads'].values() for _s, _t, column in reads}
+
+    def test_a_row_count_reads_no_column(self):
+        self.assertEqual(self.reads(['SELECT count(*) FROM t'], 'CREATE TABLE t (id INTEGER PRIMARY KEY, a);'), {''})
+
+    def test_a_rowid_read_names_the_column(self):
+        self.assertIn('id', self.reads(['SELECT rowid FROM t'], 'CREATE TABLE t (id INTEGER PRIMARY KEY, a);'))
+
+    @unittest.skipIf(sys.version_info < (3, 11), 'Python 3.10 reuses a statement even with cached_statements=0')
+    def test_statement_cache_is_off(self):
+        seen = []
+        db = trace_sqlite.traced_connect(':memory:')
+        db.execute('CREATE TABLE t (a)')
+        db.set_authorizer(lambda *a: (seen.append(a[0]), sqlite3.SQLITE_OK)[1])
+        for _ in range(2):
+            db.execute('SELECT a FROM t').fetchall()
+        db.close()
+        self.assertEqual(seen.count(sqlite3.SQLITE_READ), 2)
+
+
 class Settings(unittest.TestCase):
     def test_out_dir_default_and_override(self):
         sys.path.insert(0, str(HERE.parent))

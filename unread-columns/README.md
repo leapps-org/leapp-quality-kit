@@ -12,6 +12,11 @@ Output goes to `<unread_columns.out_dir>/<core> <stamp>/` (default `<work_dir>/u
 `report.md`, `results.json`, and per key the core's output, its log and the trace.
 Exit 0 means the report was written, whatever it lists. Exit 2 means it could not run.
 
+It runs the checkout's own code with your account, the same as the corpus run it sits beside, so
+point it only at a checkout you would run anyway. The run folder is created readable by you only,
+because it holds the core's staged copies of the evidence. A report on a checkout with local
+changes says so next to the commit.
+
 ## How it measures
 
 The core runs once per key with a profile holding every artifact of the named modules, under
@@ -19,7 +24,9 @@ The core runs once per key with a profile holding every artifact of the named mo
 imported. SQLite calls the authorizer while it prepares a statement, once for each column the
 statement reads, with the table and column it resolved. So joins, aliases, views and helper
 functions are worked out by SQLite, and no SQL text is parsed. The authorizer always allows the
-read and catches its own errors, so it cannot change what the core does.
+read and catches its own errors, so it cannot change what the core does. SQLite's statement cache is
+turned off on traced connections, so a statement a second artifact reuses is still seen (on
+Python 3.11 and later; Python 3.10 reuses it anyway, so run the core with a newer Python).
 
 A read is credited to the artifact function on the stack. A helper in another artifact file that
 it calls counts as the artifact's read.
@@ -47,6 +54,8 @@ key. A table read on a key where the artifact wrote no rows still describes the 
 ## What it cannot tell
 
 - A column used only in a JOIN or WHERE counts as read. The tool measures unread, not unreported.
+- A statement that only counts rows touches the table without reading a column, so the table is
+  listed with every column unread.
 - `SELECT *` reads every column. When one statement read every column of a table, the report says
   so, because the module may still drop columns in Python.
 - Only SQLite opened through Python's `sqlite3` is traced. A store read with `sqlcipher3` or `apsw`,

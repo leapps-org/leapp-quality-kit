@@ -50,8 +50,8 @@ def _artifact_frame():
 def _record(conn, action, arg1, arg2, dbname, source):
     """The work of the authorizer. Separate so a test can make it fail."""
     if action == sqlite3.SQLITE_READ:
-        # arg2 is '' when the statement reads the rowid; the analysis maps that to the table's
-        # INTEGER PRIMARY KEY column, which is the rowid under another name.
+        # arg2 is '' when a statement touches a table without reading a named column (count(*),
+        # SELECT 1). It is kept as a touch of the table and never counted as a column.
         if arg1 in _SKIP_TABLES or arg2 is None:
             return
         owner = _artifact_frame()
@@ -109,6 +109,11 @@ def _instrument(connection):
 
 
 def traced_connect(*args, **kwargs):
+    # A statement reused from the cache is not prepared again, so the authorizer would not see the
+    # second artifact that runs the same SQL on a shared connection. Turn the cache off unless the
+    # caller set it (keyword, or the sixth positional argument).
+    if 'cached_statements' not in kwargs and len(args) < 6:
+        kwargs['cached_statements'] = 0
     connection = _REAL_CONNECT(*args, **kwargs)
     try:
         _instrument(connection)

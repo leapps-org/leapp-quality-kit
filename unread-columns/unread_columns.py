@@ -102,12 +102,9 @@ def open_ro(path):
 
 
 def table_columns(db, table):
-    """Every column of a table, hidden and generated ones too, in declared order, and the column
-    that is the rowid under another name (a lone INTEGER PRIMARY KEY), or None."""
+    """Every column of a table, hidden and generated ones too, in declared order."""
     rows = db.execute(f'PRAGMA table_xinfo({quote(table)})').fetchall()
-    keys = [row for row in rows if row[5]]
-    alias = keys[0][1] if len(keys) == 1 and str(keys[0][2]).upper() == 'INTEGER' else None
-    return [row[1] for row in rows], alias
+    return [row[1] for row in rows]
 
 
 def column_counts(db, table, unread, read):
@@ -237,10 +234,10 @@ def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
             label = store_label(source, artifacts[func], labels)
             try:
                 with closing(open_ro(copies[str(source)])) as db:
-                    columns, alias = table_columns(db, table)
-                    if '' in read:
-                        # SQLite names a rowid read with an empty column name.
-                        read = (read - {''}) | ({alias} if alias else set())
+                    columns = table_columns(db, table)
+                    # SQLite reports a touch of the table with no named column (count(*), SELECT 1)
+                    # as an empty name. The table counts as read; no column does.
+                    read = read - {''}
                     if not columns:
                         errors.append(f'{func}: {label} table {table}: no columns in the copy')
                         continue
@@ -417,7 +414,7 @@ def run_key(tree, core, key, registry, profile, workdir, python, userbase):
     (keydir / 'run.log').write_text((done.stdout or '') + (done.stderr or ''), encoding='utf-8')
     if not trace.is_file():
         return {'status': 'could not check', 'reason': f'no trace written (exit {done.returncode})'}
-    if 'Report generation Completed' not in (done.stdout or '') + (done.stderr or ''):
+    if done.returncode != 0 or 'Report generation Completed' not in (done.stdout or '') + (done.stderr or ''):
         return {'status': 'could not check', 'reason': f'the run did not complete (exit {done.returncode})'}
     return {'status': 'ran', 'trace': trace, 'run_dir': keydir / 'run', 'input': image}
 
@@ -441,7 +438,8 @@ def main(argv=None):
             print(f'could not run: {error}', file=sys.stderr)
             return 2
         data, settings = {}, {}
-    tree = Path(args.tree).expanduser() if args.tree else kit_config.expand(kit_config.need(data, 'repos_dir')) / args.core
+    tree = (Path(args.tree).expanduser() if args.tree else
+            kit_config.expand(kit_config.need(data, 'repos_dir')) / args.core).resolve()
     try:
         artifacts = {}
         for module in args.modules:
@@ -467,12 +465,21 @@ def main(argv=None):
     if not registry.is_file():
         print(f'could not run: no registry for {args.core}', file=sys.stderr)
         return 2
+    # The core runs from its own checkout, so every path handed to it must be absolute.
+    registry = registry.resolve()
     python = str(kit_config.expand(data.get('python') or sys.executable))
     userbase = run([python, '-m', 'site', '--user-base']).stdout.strip()
     commit = run(['git', '-C', str(tree), 'rev-parse', '--short', 'HEAD']).stdout.strip() or 'unknown'
+    status = run(['git', '-C', str(tree), 'status', '--porcelain'])
+    if status.returncode != 0 or status.stdout.strip():
+        # The files on disk are what runs, so a report must not name only the commit.
+        commit += ' with local changes' if status.returncode == 0 else ' (git status failed)'
     stamp = datetime.datetime.now().strftime('%Y-%m-%d %H%M%S')
-    workdir = (Path(args.out).expanduser() if args.out else settings['out_dir']) / f'{args.core} {stamp}'
-    workdir.mkdir(parents=True, exist_ok=False)
+    workdir = ((Path(args.out).expanduser() if args.out else settings['out_dir']) / f'{args.core} {stamp}').resolve()
+    workdir.parent.mkdir(parents=True, exist_ok=True)
+    # The run folder holds the trace, the core's log and its staged copies of the evidence.
+    workdir.mkdir(mode=0o700, exist_ok=False)
+    os.chmod(workdir, 0o700)
     ext = PROFILE_EXT[args.core.lower()]
     profile = workdir / f'profile.{ext}'
     profile.write_text(json.dumps({'leapp': args.core.lower(), 'format_version': 1, 'plugins': sorted(artifacts)}))
