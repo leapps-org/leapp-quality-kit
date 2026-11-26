@@ -265,7 +265,9 @@ def verified_vendored(head, paths):
             if manifest not in manifests:
                 try:
                     data = json.loads(raw_bytes(f"{pilot.REPO}/contents/{quote(manifest)}?ref={head}"))
-                    manifests[manifest] = data.get("vendored") if isinstance(data, dict) else None
+                    entries = data.get("vendored") if isinstance(data, dict) else None
+                    # Anything but a list leaves every file's patch visible to the model.
+                    manifests[manifest] = entries if isinstance(entries, list) else None
                 except (subprocess.SubprocessError, ValueError):
                     manifests[manifest] = None
             base = manifest.rsplit("/", 1)[0] + "/" if "/" in manifest else ""

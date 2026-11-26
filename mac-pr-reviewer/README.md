@@ -55,7 +55,9 @@ schema match supports only the stated predicate, not the parser's output.
 
 The reviewer reads the kit's config file (see the root README). It uses `github_owner`,
 `owner_id`, `mac_review_repos`, `owner_mac_review_repos`, `mac_review_store` and
-`core_registries`, plus two optional keys:
+`core_registries`, plus two optional keys. `mac_review_store` must contain `{repo}`, since each
+repository needs its own database. A repository listed in `repo_owners` is read from that account,
+as in the gate.
 
 - `mac_review_upstream_owners`: GitHub owners whose repositories count as trusted upstreams for
   vendored files. Default: `github_owner`.
