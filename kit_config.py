@@ -98,3 +98,15 @@ def notes_audit_leak(data):
                       r'journal\.jsonl|\.claude/projects/[^ ]*/(subagents|[0-9a-f-]{36}\.jsonl)|/[A-Za-z]*LEAPP/(\.git|scripts|admin)|'
                       r'github\.com/' + owner + r'|githubusercontent\.com/' + owner + r'|repos/' + owner + r'/|'
                       r'gh pr|gh api|gh issue', re.I)
+
+
+def unread_columns(data):
+    """The unread-column list's settings from the optional "unread_columns" block.
+
+    Returns out_dir as a path, by default <work_dir>/unread-columns."""
+    block = data.get('unread_columns') or {}
+    if not isinstance(block, dict):
+        raise ConfigError(f'"unread_columns" must be an object in {path_of()}')
+    text = str(block.get('out_dir') or '{work_dir}/unread-columns')
+    text = text.replace('{work_dir}', str(expand(need(data, 'work_dir'))))
+    return {'out_dir': expand(text)}
