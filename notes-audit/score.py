@@ -9,7 +9,8 @@ The transcript dir is ~/.claude/projects/<project>/<session>/subagents/workflows
    files, session transcripts and the repo's GitHub history. A hit means that checker was not blind.
 2. Score: flagged statements the blind check confirmed, and controls it rejected.
 3. Report: "Findings.md" and "results.json" in the round folder, copied to
-   <work_dir>/notes-audit-findings/<today> round <n> (<CORE>)/, and the modules are added to the
+   the findings folder (notes_audit.findings_dir in the config, by default
+   <work_dir>/notes-audit-findings/<today> round <n> (<CORE>)/), and the modules are added to the
    ledger (audited.json) so the next round's default selection skips them.
 Prints counts, ids and repo-text excerpts only.
 """
@@ -24,16 +25,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import kit_config  # noqa: E402
-
-LEDGER = HERE / 'audited.json'
-
-
-def leak_pattern(owner):
-    """Reads that would let a blind checker see the audit, this tool, transcripts or the repo's history."""
-    return re.compile(r'Findings\.md|results\.json|args\.json|round\.json|audited\.json|leapp-quality-kit|notes-audit-findings|'
-                      r'journal\.jsonl|\.claude/projects/[^ ]*/(subagents|[0-9a-f-]{36}\.jsonl)|/[A-Za-z]*LEAPP/(\.git|scripts|admin)|'
-                      r'github\.com/' + re.escape(owner) + r'|gh pr|gh api|gh issue', re.I)
-
 
 def tool_uses(node):
     if isinstance(node, dict):
@@ -58,8 +49,8 @@ def main():
     folder, result_file, transcripts = (Path(p).expanduser() for p in sys.argv[1:])
     try:
         config = kit_config.load()
-        LEAK = leak_pattern(kit_config.need(config, 'github_owner'))
-        work_dir = kit_config.expand(kit_config.need(config, 'work_dir'))
+        paths = kit_config.notes_audit(config)
+        LEAK = kit_config.notes_audit_leak(config)
     except kit_config.ConfigError as error:
         sys.exit(f'FAIL {error}')
     rnd = json.loads((folder / 'round.json').read_text())
@@ -158,16 +149,21 @@ def main():
     (folder / 'Findings.md').write_text(text)
     (folder / 'results.json').write_text(json.dumps({'statements': statements, 'omissions': omissions, 'leaks': leaks}, indent=1))
 
-    ledger = json.loads(LEDGER.read_text()) if LEDGER.exists() else {}
+    # Copy the report first, so a failed copy leaves the ledger as it was and a rerun picks the same modules.
+    review = kit_config.expand(paths['findings_dir'].replace('{date}', date.today().isoformat())
+                               .replace('{round}', str(rnd['round'])).replace('{core}', rnd['core']))
+    review.mkdir(parents=True, exist_ok=True)
+    if review.resolve() != folder.resolve():
+        for name in ('Findings.md', 'results.json'):
+            shutil.copy(folder / name, review / name)
+    ledger_path = paths['ledger']
+    ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     entry = ledger.setdefault(rnd['core'], {})
     for r in data['results']:
         if r.get('audit') and r.get('results'):
             entry[r['module']] = {'round': rnd['round'], 'head': rnd['head'][:8]}
-    LEDGER.write_text(json.dumps(ledger, indent=1, sort_keys=True))
-    review = work_dir / 'notes-audit-findings' / f"{date.today().isoformat()} round {rnd['round']} ({rnd['core']})"
-    review.mkdir(parents=True, exist_ok=True)
-    for name in ('Findings.md', 'results.json'):
-        shutil.copy(folder / name, review / name)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps(ledger, indent=1, sort_keys=True))
     print('report', review / 'Findings.md')
 
 

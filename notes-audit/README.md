@@ -21,7 +21,7 @@ as a normal PR.
 
        python3 notes-audit/prepare.py --repo ~/src/ALEAPP --round 3 --count 10
 
-   The round folder is `<work_dir>/notes-audit-input/<CORE> round <n>/` (`work_dir` is in the kit's config). It holds the code at
+   The round folder is `<notes_audit.input_dir>/<CORE> round <n>/` (by default under `work_dir`). It holds the code at
    the pinned commit (`src/`), the profile, `keys.txt`, `round.json` and `args.json`.
 
 2. Run the corpus (the jobs number is the parallel cap; check `uptime` first):
@@ -39,8 +39,9 @@ as a normal PR.
        python3 notes-audit/score.py "<round folder>" <task output file> <transcript dir>
 
    It leak-checks the blind checkers, prints the counts, writes `Findings.md` and `results.json`,
-   copies them to `<work_dir>/notes-audit-findings/<today> round <n> (<CORE>)/`, and adds the
-   modules to `audited.json` (local state, not committed).
+   copies them to the findings folder (`notes_audit.findings_dir`, by default
+   `<work_dir>/notes-audit-findings/<today> round <n> (<CORE>)/`), and adds the modules to the
+   ledger (`notes_audit.ledger`, by default `notes-audit/audited.json`; local state, not committed).
 
 5. Triage. Hand-measure each finding before fixing it: a proposed wording can itself be wrong.
 

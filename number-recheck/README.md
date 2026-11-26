@@ -15,9 +15,9 @@ The wrapper adds:
 - one report grouped by module, with each key matched, drifted or could not check. A key that could
   not be checked is never counted as a pass.
 
-It edits no module and files no issue.
+It edits no module. It files issues only when asked.
 
-    python3 number-recheck/recheck.py --core ALEAPP [--keys k1 k2] [--jobs 6] [--out DIR]
+    python3 number-recheck/recheck.py --core ALEAPP [--keys k1 k2] [--jobs 6] [--out DIR] [--file-issues [--dry-run]]
 
 The core checkout is read from `<repos_dir>/<core>`. Output goes to
 `<work_dir>/number-recheck/<core> <stamp>/`: `report.md`, `results.json`, and per key
@@ -47,7 +47,21 @@ came back as status "drifted", declared 8, actual 1, with no run errors. A missi
 dependency (`sqlcipher3`) made two keys "could not check" before it was installed, which is the
 other outcome you want to see once.
 
-## Not built yet
+## Issue filing
 
-Issue filing (one issue per drifted module) and a weekly scheduled run. So far it has been run on
-ALEAPP only.
+`--file-issues` files one `audit-queue` issue in `<github_owner>/<core>` per module with drift on a
+trusted key, and lists any unconfirmed drift for that module beside it. Drift on untrusted keys alone
+files nothing. Each issue body ends with a hidden marker `<!-- number-recheck module=NAME -->`, and a
+module with an open issue carrying its marker is skipped, so repeated runs do not file duplicates.
+`--dry-run` prints what would be filed. A count declared for a run with an input the unattended run
+does not have (a `sample_data` value matching "with the ... key") is listed under "needs an input"
+and never filed.
+
+## Weekly run
+
+`weekly.sh` runs every core in `recheck_weekly_cores` with `--file-issues`, using the `python`
+interpreter from the config, and logs to `<work_dir>/number-recheck/weekly.log`. A missing corpus
+roots catalog is logged as "could not check" and exits 2. It uses `caffeinate`, so it is written for
+macOS; start it from a launch agent or cron entry.
+
+So far it has been run on ALEAPP only.

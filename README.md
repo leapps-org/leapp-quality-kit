@@ -22,7 +22,9 @@ adapt it to your own tool.
 1. Copy `config.example.json` to `~/.config/leapp-quality-kit/config.json` (or point
    `LEAPP_QUALITY_CONFIG` at another path) and fill it in: your GitHub login and numeric user id,
    which repositories each reviewer covers, any held PRs, where your core checkouts are, where the
-   corpus registries are, and a work folder for output.
+   corpus registries are, and a work folder for output. The optional keys (`attestations_dir`,
+   `notes_audit`, `recheck_weekly_cores`, `app_review_setup`) keep local state out of the checkout
+   and are described in each folder's README.
 2. For the auditor, copy `agents/leapp-notes-auditor.md` into `~/.claude/agents/`.
 3. For the merge guard, add it as a `PreToolUse` hook in your Claude Code settings:
 
@@ -36,9 +38,12 @@ adapt it to your own tool.
 }
 ```
 
-Run the tests with `python3 -m unittest discover -s review-gate` and
-`python3 -m unittest discover -s mac-pr-reviewer`. For the Mac reviewer, see
-`mac-pr-reviewer/README.md`.
+The guard fails closed: if the config is missing, cannot be read, lacks `github_owner` or lacks
+any of the five repo lists (an empty list is fine), or if `kit_config` cannot be imported, every
+merge-shaped command is denied. Ordinary commands still run.
+
+Run the tests with `python3 -m unittest discover -s <folder>` for `review-gate`, `notes-audit`,
+`number-recheck` and `mac-pr-reviewer`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
 
 ## The review gate
 

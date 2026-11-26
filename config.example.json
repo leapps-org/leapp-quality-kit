@@ -7,8 +7,11 @@
   "owner_mac_review_repos": ["DLEAPP"],
   "app_review_repos": [],
   "checks_only_repos": ["LAVA"],
+  "repo_owners": {"example-tool": "your-org"},
   "holds": {"ALEAPP#99999": "example: waits on a second maintainer"},
   "mac_review_store": "~/Library/Application Support/{repo}/PR Review/reviews.sqlite3",
+  "attestations_dir": "~/.config/leapp-quality-kit/attestations",
+  "app_review_setup": "",
   "mac_review_upstream_owners": ["your-github-login"],
   "mac_review_guides": {
     "iLEAPP": [".claude/skills/leapp-new-artifact/SKILL.md", "admin/docs/module_updates.md"]
@@ -17,6 +20,12 @@
   "repos_dir": "~/src",
   "python": "python3",
   "work_dir": "~/leapp-quality-work",
+  "notes_audit": {
+    "input_dir": "{work_dir}/notes-audit-input",
+    "findings_dir": "{work_dir}/notes-audit-findings/{date} round {round} ({core})",
+    "ledger": "~/.config/leapp-quality-kit/audited.json"
+  },
+  "recheck_weekly_cores": ["ALEAPP"],
 
   "corpus_roots": "/path/to/corpus/corpus-roots.json",
   "core_registries": {

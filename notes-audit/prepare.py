@@ -23,8 +23,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import kit_config  # noqa: E402
 
-# The ledger of audited modules is local state, kept out of git (see .gitignore).
-LEDGER = HERE / 'audited.json'
 ARCHIVES = ('.zip', '.tar', '.tar.gz', '.tgz')
 PROFILE_EXT = {'aleapp': 'alprofile', 'ileapp': 'ilprofile', 'rleapp': 'rlprofile', 'dleapp': 'dlprofile', 'vleapp': 'vlprofile'}
 
@@ -87,12 +85,13 @@ def main():
     parser.add_argument('--count', type=int, default=10)
     parser.add_argument('--max-images', type=int, default=8)
     parser.add_argument('--max-notes', type=int, default=12000, help='skip modules with more notes text than this')
-    parser.add_argument('--out', type=Path, help='default <work_dir>/notes-audit-input/<CORE> round <round>')
+    parser.add_argument('--out', type=Path, help='default <notes_audit.input_dir>/<CORE> round <round>')
     a = parser.parse_args()
     try:
         config = kit_config.load()
         registries = kit_config.need(config, 'core_registries')
-        work_dir = kit_config.expand(kit_config.need(config, 'work_dir'))
+        paths = kit_config.notes_audit(config)
+        leak = kit_config.notes_audit_leak(config)
     except kit_config.ConfigError as error:
         sys.exit(f'FAIL {error}')
 
@@ -104,9 +103,12 @@ def main():
     registry = str(kit_config.expand(registries[key]))
     # Kept apart from the findings folder: the blind checkers read this folder, and score.py treats any read
     # of the findings folder as a leak. score.py copies the finished report there.
-    out = (a.out or work_dir / 'notes-audit-input' / f'{core} round {a.round}').expanduser()
-    if 'notes-audit-findings' in str(out):
-        sys.exit('FAIL keep the round folder out of the findings folder')
+    out = (a.out or paths['input_dir'] / f'{core} round {a.round}').expanduser()
+    # The same pattern score.py applies to the blind checkers' reads: a round folder it matches would make
+    # every read of the round look like a leak.
+    hit = leak.search(str(out))
+    if hit:
+        sys.exit(f'FAIL the round folder path contains "{hit.group(0)}", which the leak check flags; choose another --out')
     if out.exists():
         sys.exit(f'FAIL output exists: {out}')
 
@@ -119,7 +121,9 @@ def main():
     subprocess.run(['tar', '-x', '-C', str(src)], input=archive, check=True)
 
     usable = usable_keys(registry)
-    ledger = json.loads(LEDGER.read_text()) if LEDGER.exists() else {}
+    # The ledger of audited modules is local state, kept out of git (see .gitignore).
+    ledger_path = paths['ledger']
+    ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     done = set(ledger.get(core, {}))
     metas = {}
     for path in sorted((src / 'scripts/artifacts').glob('*.py')):

@@ -12,22 +12,52 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import kit_config  # noqa: E402
+try:
+    import kit_config  # noqa: E402
+    IMPORT_ERROR = None
+except Exception as error:  # pylint: disable=broad-exception-caught
+    # A broken install must still block merges, so the error is kept and main() denies with it.
+    kit_config = None
+    IMPORT_ERROR = error
 
 GATE = pathlib.Path(__file__).resolve().with_name('review_gate.py')
 # Filled by configure() from the kit's config file: the owner's login and every repo the gate covers.
 OWNER = ''
 REPOS = set()
 LOWER = {}
+OWNERS = {}
+
+
+# A GitHub login or repo name: no spaces or slashes, so a padded or pasted value cannot hide a repo.
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
+REPO_LISTS = ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'app_review_repos', 'checks_only_repos')
 
 
 def configure(data):
-    global OWNER, REPOS, LOWER
-    OWNER = str(kit_config.need(data, 'github_owner')).lower()
-    REPOS = set()
-    for field in ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'app_review_repos', 'checks_only_repos'):
-        REPOS |= set(data.get(field) or [])
+    """Every repo list must be present (an empty list is fine). A missing or misspelled key would
+    otherwise drop its repos from the guard, and their merges would pass with no gate run."""
+    global OWNER, REPOS, LOWER, OWNERS
+    owner = kit_config.need(data, 'github_owner')
+    if not isinstance(owner, str) or not NAME.fullmatch(owner):
+        raise kit_config.ConfigError(f'"github_owner" must be one GitHub login in {kit_config.path_of()}')
+    OWNER = owner.lower()
+    repos = set()
+    for field in REPO_LISTS:
+        value = data.get(field)
+        if not isinstance(value, list) or not all(isinstance(name, str) and NAME.fullmatch(name) for name in value):
+            raise kit_config.ConfigError(f'"{field}" must be a list of repo names in {kit_config.path_of()}')
+        repos |= set(value)
+    if not repos:
+        raise kit_config.ConfigError(f'no repos are listed in {kit_config.path_of()}')
+    # Absent means no overrides. Any other value must be a map, or a covered repo under another account
+    # would silently fall back to github_owner and its merges would pass with no gate run.
+    owners = data.get('repo_owners', {})
+    if not isinstance(owners, dict) or not all(isinstance(k, str) and NAME.fullmatch(k) and isinstance(v, str)
+                                               and NAME.fullmatch(v) for k, v in owners.items()):
+        raise kit_config.ConfigError(f'"repo_owners" must map repo names to GitHub logins in {kit_config.path_of()}')
+    REPOS = repos
     LOWER = {name.lower(): name for name in REPOS}
+    OWNERS = {name.lower(): owner.lower() for name, owner in owners.items()}
 START = r'(?:^|[;&|(\n]\s*|\b(?:then|do|else|time|command|exec|eval)\s+|(?:ba|z)?sh\s+-l?c\s+[\'"]|\$\(\s*)'
 ENV = r'(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
 GH = r'(?:\S*/)?gh\s+'
@@ -47,12 +77,20 @@ def deny(reason):
     return 0
 
 
+def owner_for(name):
+    """The account a covered repo lives under: github_owner unless repo_owners names another."""
+    return OWNERS.get(name.lower(), OWNER)
+
+
 def repo_name(slug):
-    """The LEAPP name for owner/repo, or None for a repo this rule does not cover."""
+    """The covered repo's name for owner/repo, or None for a repo this rule does not cover."""
     parts = slug.rstrip('/').removesuffix('.git').split('/')
-    if len(parts) < 2 or parts[-2].lower() != OWNER:
+    if len(parts) < 2:
         return None
-    return LOWER.get(parts[-1].lower())
+    name = LOWER.get(parts[-1].lower())
+    if name is None or parts[-2].lower() != owner_for(name):
+        return None
+    return name
 
 
 def directory_for(command, cwd):
@@ -134,7 +172,8 @@ def check_merge(rest, prefix, command, cwd):
     elif parsed['repo']:
         if '$' in parsed['repo']:
             return 'Name the repo literally so the review gate can check this merge.'
-        repo = repo_name(parsed['repo'] if '/' in parsed['repo'] else f'{OWNER}/{parsed["repo"]}')
+        bare = parsed['repo']
+        repo = repo_name(bare if '/' in bare else f'{owner_for(bare)}/{bare}')
         if repo is None:
             return None
     else:
@@ -213,11 +252,21 @@ def main():
         return deny('The merge guard could not read this tool call.')
     tool = payload.get('tool_name', '')
     tool_input = payload.get('tool_input') or {}
+    command = str(tool_input.get('command', ''))
+    # Without a working config the guard cannot tell which repos are covered, so it blocks anything
+    # that could merge: a merge-shaped command, the auto-merge tool, or a script it would have to read.
+    could_merge = tool != 'Bash' or 'merge' in command.lower() or bool(SCRIPT.search(command.replace('\\\n', ' ')))
+    if IMPORT_ERROR is not None:
+        if could_merge:
+            return deny(f'The merge guard could not load kit_config ({type(IMPORT_ERROR).__name__}), '
+                        'so this command is blocked until the kit is fixed.')
+        return 0
     try:
         configure(kit_config.load())
     except kit_config.ConfigError as error:
-        if tool != 'Bash' or 'merge' in str(tool_input.get('command', '')).lower():
-            return deny(f'The merge guard has no config ({error}), so this merge is blocked.')
+        if could_merge:
+            return deny(f'The merge guard has no usable config ({error}), so this command is blocked '
+                        'until the config is fixed.')
         return 0
     try:
         if tool == 'Bash':
