@@ -177,6 +177,44 @@ class FailsClosed(unittest.TestCase):
                     self.assertEqual('"deny"' in done.stdout, denied)
 
 
+class RepoOwners(unittest.TestCase):
+    OWNED = {**CONFIG, 'app_review_repos': CONFIG['app_review_repos'] + ['quality-kit'],
+             'repo_owners': {'quality-kit': 'example-org'}}
+
+    def setUp(self):
+        guard.configure(self.OWNED)
+
+    def tearDown(self):
+        guard.configure(CONFIG)
+
+    def test_a_repo_with_its_own_owner_is_covered_only_there(self):
+        self.assertEqual(guard.repo_name('example-org/quality-kit'), 'quality-kit')
+        self.assertIsNone(guard.repo_name('example-owner/quality-kit'))
+        self.assertIsNone(guard.repo_name('example-org/GLEAPP'))
+        self.assertEqual(guard.repo_name('example-owner/GLEAPP'), 'GLEAPP')
+
+    def test_its_merges_are_gated_in_every_spelling(self):
+        for command in ('gh pr merge 2 --repo example-org/quality-kit', 'gh pr merge 2 --repo quality-kit',
+                        'gh pr merge https://github.com/example-org/quality-kit/pull/2'):
+            with self.subTest(command=command), gate(1):
+                self.assertIn('did not pass', guard.check_command(command, '/tmp') or '')
+        self.assertTrue(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-org/quality-kit/pull/2'}))
+
+    def test_a_bad_owner_map_denies(self):
+        self.assertIn('"deny"', run_main(FailsClosed.MERGE, {**self.OWNED, 'repo_owners': {'quality-kit': 'example org'}}))
+
+    def test_the_gate_uses_the_same_owner(self):
+        import review_gate
+        review_gate.configure(self.OWNED)
+        try:
+            self.assertEqual(review_gate.owner_for('quality-kit'), 'example-org')
+            self.assertEqual(review_gate.owner_for('ALEAPP'), 'example-owner')
+            with patch.object(review_gate.kit_config, 'load', return_value=self.OWNED):
+                self.assertEqual(review_gate.main(['example-owner/quality-kit', '2']), 2)
+        finally:
+            review_gate.configure(CONFIG)
+
+
 class AppReviewerList(unittest.TestCase):
     def test_every_probe_and_reader_the_mac_reviewer_covers_is_in_the_config(self):
         """Optional: set "app_review_setup" to the reviewer's app_review.py to check its PROBES and READERS."""

@@ -25,6 +25,7 @@ GATE = pathlib.Path(__file__).resolve().with_name('review_gate.py')
 OWNER = ''
 REPOS = set()
 LOWER = {}
+OWNERS = {}
 
 
 # A GitHub login or repo name: no spaces or slashes, so a padded or pasted value cannot hide a repo.
@@ -35,7 +36,7 @@ REPO_LISTS = ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'a
 def configure(data):
     """Every repo list must be present (an empty list is fine). A missing or misspelled key would
     otherwise drop its repos from the guard, and their merges would pass with no gate run."""
-    global OWNER, REPOS, LOWER
+    global OWNER, REPOS, LOWER, OWNERS
     owner = kit_config.need(data, 'github_owner')
     if not isinstance(owner, str) or not NAME.fullmatch(owner):
         raise kit_config.ConfigError(f'"github_owner" must be one GitHub login in {kit_config.path_of()}')
@@ -48,8 +49,13 @@ def configure(data):
         repos |= set(value)
     if not repos:
         raise kit_config.ConfigError(f'no repos are listed in {kit_config.path_of()}')
+    owners = data.get('repo_owners') or {}
+    if not isinstance(owners, dict) or not all(isinstance(k, str) and NAME.fullmatch(k) and isinstance(v, str)
+                                               and NAME.fullmatch(v) for k, v in owners.items()):
+        raise kit_config.ConfigError(f'"repo_owners" must map repo names to GitHub logins in {kit_config.path_of()}')
     REPOS = repos
     LOWER = {name.lower(): name for name in REPOS}
+    OWNERS = {name.lower(): owner.lower() for name, owner in owners.items()}
 START = r'(?:^|[;&|(\n]\s*|\b(?:then|do|else|time|command|exec|eval)\s+|(?:ba|z)?sh\s+-l?c\s+[\'"]|\$\(\s*)'
 ENV = r'(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
 GH = r'(?:\S*/)?gh\s+'
@@ -69,12 +75,20 @@ def deny(reason):
     return 0
 
 
+def owner_for(name):
+    """The account a covered repo lives under: github_owner unless repo_owners names another."""
+    return OWNERS.get(name.lower(), OWNER)
+
+
 def repo_name(slug):
-    """The LEAPP name for owner/repo, or None for a repo this rule does not cover."""
+    """The covered repo's name for owner/repo, or None for a repo this rule does not cover."""
     parts = slug.rstrip('/').removesuffix('.git').split('/')
-    if len(parts) < 2 or parts[-2].lower() != OWNER:
+    if len(parts) < 2:
         return None
-    return LOWER.get(parts[-1].lower())
+    name = LOWER.get(parts[-1].lower())
+    if name is None or parts[-2].lower() != owner_for(name):
+        return None
+    return name
 
 
 def directory_for(command, cwd):
@@ -156,7 +170,8 @@ def check_merge(rest, prefix, command, cwd):
     elif parsed['repo']:
         if '$' in parsed['repo']:
             return 'Name the repo literally so the review gate can check this merge.'
-        repo = repo_name(parsed['repo'] if '/' in parsed['repo'] else f'{OWNER}/{parsed["repo"]}')
+        bare = parsed['repo']
+        repo = repo_name(bare if '/' in bare else f'{owner_for(bare)}/{bare}')
         if repo is None:
             return None
     else:

@@ -33,12 +33,18 @@ APP_REVIEW_LIVE = set()
 KNOWN_REPOS = set()
 HOLDS = {}
 MAC_STORE = ''
+REPO_OWNERS = {}
+
+
+def owner_for(repo):
+    """The account a covered repo lives under: github_owner unless repo_owners names another."""
+    return REPO_OWNERS.get(repo, OWNER)
 
 
 def configure(data):
     """Set the module's settings from a config dict."""
     global OWNER, OWNER_ID, GREPTILE_REPOS, MAC_REPOS, OWNER_MAC_REPOS, NO_REVIEW_REPOS, APP_REVIEW_LIVE
-    global KNOWN_REPOS, HOLDS, MAC_STORE, ATTESTATIONS
+    global KNOWN_REPOS, HOLDS, MAC_STORE, ATTESTATIONS, REPO_OWNERS
     OWNER = kit_config.need(data, 'github_owner')
     OWNER_ID = int(kit_config.need(data, 'owner_id'))
     GREPTILE_REPOS = set(data.get('greptile_repos') or [])
@@ -54,6 +60,8 @@ def configure(data):
         repo, _, number = name.partition('#')
         HOLDS[(repo, int(number))] = reason
     MAC_STORE = data.get('mac_review_store') or '~/Library/Application Support/{repo}/PR Review/reviews.sqlite3'
+    # Repos that live under another account than github_owner, as {"repo": "account"}.
+    REPO_OWNERS = {str(name): str(owner) for name, owner in (data.get('repo_owners') or {}).items()}
     # Where --mac-report-read and --owner-approved are recorded per commit. Default: beside this file.
     ATTESTATIONS = kit_config.expand(data['attestations_dir']) if data.get('attestations_dir') else DEFAULT_ATTESTATIONS
 
@@ -213,7 +221,7 @@ def decide(pr, runs, statuses, threads, mac_done, mac_report_read=None, owner_ap
 
 
 def read_pr(repo, number):
-    data = gh('api', f'repos/{OWNER}/{repo}/pulls/{number}')
+    data = gh('api', f'repos/{owner_for(repo)}/{repo}/pulls/{number}')
     return {'repo': data['base']['repo']['name'], 'number': number, 'head': data['head']['sha'],
             'author_id': data['user']['id'], 'state': 'merged' if data.get('merged') else data['state'],
             'draft': data['draft'], 'mergeable': data.get('mergeable')}
@@ -222,7 +230,7 @@ def read_pr(repo, number):
 def read_runs(repo, head):
     runs, page = [], 1
     while True:
-        data = gh('api', f'repos/{OWNER}/{repo}/commits/{head}/check-runs?per_page=100&page={page}')
+        data = gh('api', f'repos/{owner_for(repo)}/{repo}/commits/{head}/check-runs?per_page=100&page={page}')
         runs += data['check_runs']
         if len(runs) >= data['total_count'] or not data['check_runs']:
             if len(runs) < data['total_count']:
@@ -234,7 +242,7 @@ def read_runs(repo, head):
 def read_threads(repo, number):
     threads, cursor = [], None
     while True:
-        args = ['api', 'graphql', '-f', f'query={THREADS_QUERY}', '-F', f'o={OWNER}', '-F', f'r={repo}',
+        args = ['api', 'graphql', '-f', f'query={THREADS_QUERY}', '-F', f'o={owner_for(repo)}', '-F', f'r={repo}',
                 '-F', f'n={number}']
         if cursor:
             args += ['-f', f'c={cursor}']
@@ -284,9 +292,11 @@ def main(argv=None):
         configure(kit_config.load())
         if repo not in KNOWN_REPOS:
             raise CouldNotCheck(f'{repo} is not a repo this gate knows')
+        if '/' in args.repo and args.repo.casefold() != f'{owner_for(repo)}/{repo}'.casefold():
+            raise CouldNotCheck(f'{args.repo} is not under {owner_for(repo)}, the account the config gives for {repo}')
         pr = read_pr(repo, args.pr)
         runs = read_runs(repo, pr['head'])
-        statuses = gh('api', f"repos/{OWNER}/{repo}/commits/{pr['head']}/status")['statuses']
+        statuses = gh('api', f"repos/{owner_for(repo)}/{repo}/commits/{pr['head']}/status")['statuses']
         threads = read_threads(repo, args.pr)
         route = route_for(repo, pr['author_id'])
         mac_done = mac_review_done(repo, args.pr, pr['head']) if route.startswith('mac') else False
@@ -312,7 +322,7 @@ def main(argv=None):
             print(f'- {problem}')
         return 1
     print('MAY MERGE')
-    print(f"gh pr merge {args.pr} --repo {OWNER}/{repo} --merge --delete-branch --match-head-commit {pr['head']}")
+    print(f"gh pr merge {args.pr} --repo {owner_for(repo)}/{repo} --merge --delete-branch --match-head-commit {pr['head']}")
     return 0
 
 
