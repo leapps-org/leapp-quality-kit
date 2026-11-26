@@ -149,6 +149,13 @@ def main():
     (folder / 'Findings.md').write_text(text)
     (folder / 'results.json').write_text(json.dumps({'statements': statements, 'omissions': omissions, 'leaks': leaks}, indent=1))
 
+    # Copy the report first, so a failed copy leaves the ledger as it was and a rerun picks the same modules.
+    review = kit_config.expand(paths['findings_dir'].replace('{date}', date.today().isoformat())
+                               .replace('{round}', str(rnd['round'])).replace('{core}', rnd['core']))
+    review.mkdir(parents=True, exist_ok=True)
+    if review.resolve() != folder.resolve():
+        for name in ('Findings.md', 'results.json'):
+            shutil.copy(folder / name, review / name)
     ledger_path = paths['ledger']
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     entry = ledger.setdefault(rnd['core'], {})
@@ -157,11 +164,6 @@ def main():
             entry[r['module']] = {'round': rnd['round'], 'head': rnd['head'][:8]}
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger_path.write_text(json.dumps(ledger, indent=1, sort_keys=True))
-    review = kit_config.expand(paths['findings_dir'].replace('{date}', date.today().isoformat())
-                               .replace('{round}', str(rnd['round'])).replace('{core}', rnd['core']))
-    review.mkdir(parents=True, exist_ok=True)
-    for name in ('Findings.md', 'results.json'):
-        shutil.copy(folder / name, review / name)
     print('report', review / 'Findings.md')
 
 

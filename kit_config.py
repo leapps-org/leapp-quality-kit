@@ -91,7 +91,9 @@ def notes_audit_leak(data):
     repos_dir = data.get('repos_dir')
     checkout = (re.escape(expand(repos_dir).name) + r'/[A-Za-z]*LEAPP|') if repos_dir else ''
     owner = re.escape(str(need(data, 'github_owner')))
-    return re.compile(r'Findings\.md|results\.json|args\.json|round\.json|audited\.json|leapp-quality-kit|'
+    # The ledger by its configured file name too, in case it is not called audited.json.
+    ledger = re.escape(paths['ledger'].name) + '|'
+    return re.compile(r'Findings\.md|results\.json|args\.json|round\.json|audited\.json|' + ledger + r'leapp-quality-kit|'
                       r'leapp-notes-audit(?!-input)|leapp-review-gate|' + marker + '|' + glob + checkout +
                       r'journal\.jsonl|\.claude/projects/[^ ]*/(subagents|[0-9a-f-]{36}\.jsonl)|/[A-Za-z]*LEAPP/(\.git|scripts|admin)|'
                       r'github\.com/' + owner + r'|githubusercontent\.com/' + owner + r'|repos/' + owner + r'/|'

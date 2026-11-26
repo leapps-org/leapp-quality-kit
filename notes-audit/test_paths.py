@@ -53,6 +53,10 @@ class Leaks(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(leak.search(text))
 
+    def test_a_renamed_ledger_is_a_leak(self):
+        leak = kit_config.notes_audit_leak({**CONFIG, 'notes_audit': {**CONFIG['notes_audit'], 'ledger': '/s/done-modules.json'}})
+        self.assertTrue(leak.search('cat /s/done-modules.json'))
+
     def test_a_marker_that_names_the_input_folder_is_refused(self):
         with self.assertRaises(kit_config.ConfigError):
             kit_config.notes_audit({'work_dir': '/home/Downloads', 'notes_audit': {'findings_dir': '{work_dir}/{date} notes audit'}})
