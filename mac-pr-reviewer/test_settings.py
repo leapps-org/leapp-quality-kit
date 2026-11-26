@@ -41,6 +41,21 @@ class StoreShared(unittest.TestCase):
         self.assertTrue(gate.mac_review_done("ALEAPP", 5, HEAD))
         self.assertFalse(gate.mac_review_done("ALEAPP", 5, "b" * 40))
 
+    def test_a_store_shared_by_two_repositories_is_refused(self):
+        shared = {**TEST_CONFIG, "mac_review_store": str(kit_test_config.STORE_ROOT / "one.sqlite3")}
+        with self.assertRaises(settings.kit_config.ConfigError):
+            settings.for_project(shared, "ALEAPP")
+        alone = {**shared, "mac_review_repos": ["ALEAPP"]}
+        self.assertEqual(settings.for_project(alone, "ALEAPP")["store"].name, "one.sqlite3")
+
+    def test_repo_owners_moves_the_repository_not_the_owner(self):
+        moved = settings.for_project({**TEST_CONFIG, "repo_owners": {"aleapp": "example-org"}}, "ALEAPP")
+        self.assertEqual(moved["full_name"], "example-org/ALEAPP")
+        self.assertEqual(moved["owner"], TEST_CONFIG["github_owner"])
+        self.assertEqual(settings.for_project(TEST_CONFIG, "DLEAPP")["full_name"], "example-owner/DLEAPP")
+        with self.assertRaises(settings.kit_config.ConfigError):
+            settings.for_project({**TEST_CONFIG, "repo_owners": []}, "ALEAPP")
+
     def test_unlisted_repository_is_refused(self):
         with self.assertRaises(settings.kit_config.ConfigError):
             settings.for_project(TEST_CONFIG, "OTHER")
@@ -87,6 +102,15 @@ class Installer(unittest.TestCase):
             self.assertEqual(spec["EnvironmentVariables"]["LEAPP_QUALITY_CONFIG"], str(Path(home) / "config.json"))
             self.assertEqual(spec["StartInterval"], 300)
         self.assertEqual(len(jobs), len(plists))
+
+
+class Manifest(unittest.TestCase):
+    def test_a_manifest_whose_list_is_not_a_list_leaves_the_patch_visible(self):
+        use()
+        for value in (5, True, "x", {"path": "a.py"}):
+            with self.subTest(value=value), \
+                    patch.object(worker, "raw_bytes", return_value=json.dumps({"vendored": value}).encode()):
+                self.assertEqual(worker.verified_vendored(HEAD, ["vendor/a.py"]), {})
 
 
 class Upstreams(unittest.TestCase):
