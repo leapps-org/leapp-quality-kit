@@ -40,3 +40,33 @@ def need(data, name):
 
 def expand(text):
     return Path(os.path.expandvars(str(text))).expanduser()
+
+
+NOTES_AUDIT_DEFAULTS = {
+    'input_dir': '{work_dir}/notes-audit-input',
+    'findings_dir': '{work_dir}/notes-audit-findings/{date} round {round} ({core})',
+    'ledger': '{kit}/notes-audit/audited.json',
+}
+
+
+def notes_audit(data):
+    """The notes audit's folders from the optional "notes_audit" block, with defaults under work_dir.
+
+    Returns input_dir and ledger as paths, findings_dir as a template with {date}, {round} and
+    {core}, and findings_marker: the fixed text of the findings folder that the leak check looks for
+    and that a round folder must stay out of.
+    """
+    block = data.get('notes_audit') or {}
+    if not isinstance(block, dict):
+        raise ConfigError(f'"notes_audit" must be an object in {path_of()}')
+    fill = {'work_dir': str(expand(need(data, 'work_dir'))), 'kit': str(Path(__file__).resolve().parent)}
+    text = {name: str(block.get(name) or default) for name, default in NOTES_AUDIT_DEFAULTS.items()}
+    for name in ('input_dir', 'ledger', 'findings_dir'):
+        for key, value in fill.items():
+            text[name] = text[name].replace('{' + key + '}', value)
+    fixed = str(expand(text['findings_dir'].split('{', 1)[0]))
+    marker = next((part.strip() for part in reversed(Path(fixed).parts) if part.strip()), '')
+    if len(marker) < 4:
+        raise ConfigError(f'"notes_audit.findings_dir" needs a fixed folder name before its first field in {path_of()}')
+    return {'input_dir': expand(text['input_dir']), 'ledger': expand(text['ledger']),
+            'findings_dir': text['findings_dir'], 'findings_marker': marker}

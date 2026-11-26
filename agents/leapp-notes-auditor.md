@@ -44,7 +44,10 @@ three inputs above is missing, say which one and stop.
    - Absence claims ("does not store", "never", "no records") rest on something stronger
      than an empty result from one image.
    - Every `data_views` type, column type, flag and field value is one the consumer branches
-     on. Grep the consumer (LAVA's renderer) for the literal before accepting it.
+     on. Grep the consumer for the literal before accepting it. LAVA's renderer
+     (`src/renderer/components/dataRender/DataRenderer.jsx`) handles date, datetime,
+     phonenumber, media, number, latitude and longitude as of LAVA main 346bbe7
+     (2026-11-26). The list grows, so grep it again rather than trusting this one.
    - Timestamps: epoch and zone are sourced per column, the primary event time is the first
      column, and other time columns follow it.
    - The third return element is a real source path.

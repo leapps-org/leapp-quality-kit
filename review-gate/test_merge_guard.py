@@ -1,6 +1,12 @@
 """The guard must catch every merge spelling and leave ordinary commands alone. Nothing here merges."""
+import ast
 import importlib.util
+import io
+import json
 import pathlib
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -119,6 +125,65 @@ class Guard(unittest.TestCase):
         self.assertTrue(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-owner/iLEAPP/pull/1'}))
         self.assertIsNone(guard.check_auto_merge({'enabled': False, 'url': 'https://github.com/example-owner/iLEAPP/pull/1'}))
         self.assertIsNone(guard.check_auto_merge({'enabled': True, 'url': 'https://github.com/example-owner/appwalk/pull/1'}))
+
+
+def run_main(payload, config):
+    """Run the hook's main() on one payload with a given config dict; return what it printed."""
+    out = io.StringIO()
+    with patch.object(guard.kit_config, 'load', return_value=config), patch('sys.stdin', io.StringIO(json.dumps(payload))), \
+            patch('sys.stdout', out), gate(1):
+        guard.main()
+    guard.configure(CONFIG)
+    return out.getvalue()
+
+
+class FailsClosed(unittest.TestCase):
+    MERGE = {'tool_name': 'Bash', 'tool_input': {'command': 'gh pr merge 5 --repo example-owner/ALEAPP'}, 'cwd': '/tmp'}
+
+    def test_a_missing_or_misspelled_repo_list_denies(self):
+        for field in guard.REPO_LISTS:
+            for broken in ({k: v for k, v in CONFIG.items() if k != field}, {**CONFIG, field: 'ALEAPP'}, {**CONFIG, field: [None]}):
+                with self.subTest(field=field, broken=broken.get(field)):
+                    self.assertIn('"deny"', run_main(self.MERGE, broken))
+
+    def test_no_repos_at_all_denies(self):
+        empty = {**CONFIG, **{field: [] for field in guard.REPO_LISTS}}
+        self.assertIn('"deny"', run_main(self.MERGE, empty))
+
+    def test_a_broken_config_leaves_ordinary_commands_alone(self):
+        broken = {k: v for k, v in CONFIG.items() if k != 'greptile_repos'}
+        self.assertEqual(run_main({'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}, broken), '')
+
+    def test_an_unimportable_kit_config_denies_merges(self):
+        with tempfile.TemporaryDirectory() as folder:
+            copy = pathlib.Path(folder) / 'review-gate' / PATH.name
+            copy.parent.mkdir()
+            shutil.copy(PATH, copy)
+            for payload, denied in ((self.MERGE, True), ({'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}, False)):
+                done = subprocess.run([sys.executable, '-I', '-B', str(copy)], input=json.dumps(payload), text=True,
+                                      capture_output=True, check=False)
+                with self.subTest(denied=denied):
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual('"deny"' in done.stdout, denied)
+
+
+class AppReviewerList(unittest.TestCase):
+    def test_every_probe_and_reader_the_mac_reviewer_covers_is_in_the_config(self):
+        """Optional: set "app_review_setup" to the reviewer's app_review.py to check its PROBES and READERS."""
+        try:
+            data = guard.kit_config.load()
+        except guard.kit_config.ConfigError:
+            self.skipTest('no kit config on this machine')
+        setup = data.get('app_review_setup')
+        if not setup or not guard.kit_config.expand(setup).is_file():
+            self.skipTest('app_review_setup is not set or not on this machine')
+        names = {}
+        for node in ast.parse(guard.kit_config.expand(setup).read_text(encoding='utf-8')).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id in ('PROBES', 'READERS'):
+                    names[node.targets[0].id] = set(ast.literal_eval(node.value))
+        self.assertEqual(set(names), {'PROBES', 'READERS'})
+        self.assertEqual(sorted((names['PROBES'] | names['READERS']) - set(data.get('app_review_repos') or [])), [])
 
 
 if __name__ == '__main__':

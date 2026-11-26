@@ -12,7 +12,13 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import kit_config  # noqa: E402
+try:
+    import kit_config  # noqa: E402
+    IMPORT_ERROR = None
+except Exception as error:  # pylint: disable=broad-exception-caught
+    # A broken install must still block merges, so the error is kept and main() denies with it.
+    kit_config = None
+    IMPORT_ERROR = error
 
 GATE = pathlib.Path(__file__).resolve().with_name('review_gate.py')
 # Filled by configure() from the kit's config file: the owner's login and every repo the gate covers.
@@ -21,12 +27,23 @@ REPOS = set()
 LOWER = {}
 
 
+REPO_LISTS = ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'app_review_repos', 'checks_only_repos')
+
+
 def configure(data):
+    """Every repo list must be present (an empty list is fine). A missing or misspelled key would
+    otherwise drop its repos from the guard, and their merges would pass with no gate run."""
     global OWNER, REPOS, LOWER
     OWNER = str(kit_config.need(data, 'github_owner')).lower()
-    REPOS = set()
-    for field in ('greptile_repos', 'mac_review_repos', 'owner_mac_review_repos', 'app_review_repos', 'checks_only_repos'):
-        REPOS |= set(data.get(field) or [])
+    repos = set()
+    for field in REPO_LISTS:
+        value = data.get(field)
+        if not isinstance(value, list) or not all(isinstance(name, str) and name for name in value):
+            raise kit_config.ConfigError(f'"{field}" must be a list of repo names in {kit_config.path_of()}')
+        repos |= set(value)
+    if not repos:
+        raise kit_config.ConfigError(f'no repos are listed in {kit_config.path_of()}')
+    REPOS = repos
     LOWER = {name.lower(): name for name in REPOS}
 START = r'(?:^|[;&|(\n]\s*|\b(?:then|do|else|time|command|exec|eval)\s+|(?:ba|z)?sh\s+-l?c\s+[\'"]|\$\(\s*)'
 ENV = r'(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
@@ -213,6 +230,11 @@ def main():
         return deny('The merge guard could not read this tool call.')
     tool = payload.get('tool_name', '')
     tool_input = payload.get('tool_input') or {}
+    if IMPORT_ERROR is not None:
+        if tool != 'Bash' or 'merge' in str(tool_input.get('command', '')).lower():
+            return deny(f'The merge guard could not load kit_config ({type(IMPORT_ERROR).__name__}), '
+                        'so this merge is blocked.')
+        return 0
     try:
         configure(kit_config.load())
     except kit_config.ConfigError as error:

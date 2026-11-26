@@ -38,7 +38,7 @@ MAC_STORE = ''
 def configure(data):
     """Set the module's settings from a config dict."""
     global OWNER, OWNER_ID, GREPTILE_REPOS, MAC_REPOS, OWNER_MAC_REPOS, NO_REVIEW_REPOS, APP_REVIEW_LIVE
-    global KNOWN_REPOS, HOLDS, MAC_STORE
+    global KNOWN_REPOS, HOLDS, MAC_STORE, ATTESTATIONS
     OWNER = kit_config.need(data, 'github_owner')
     OWNER_ID = int(kit_config.need(data, 'owner_id'))
     GREPTILE_REPOS = set(data.get('greptile_repos') or [])
@@ -54,10 +54,13 @@ def configure(data):
         repo, _, number = name.partition('#')
         HOLDS[(repo, int(number))] = reason
     MAC_STORE = data.get('mac_review_store') or '~/Library/Application Support/{repo}/PR Review/reviews.sqlite3'
+    # Where --mac-report-read and --owner-approved are recorded per commit. Default: beside this file.
+    ATTESTATIONS = kit_config.expand(data['attestations_dir']) if data.get('attestations_dir') else DEFAULT_ATTESTATIONS
 
 
 OK_CONCLUSIONS = {'success', 'skipped', 'neutral'}
-ATTESTATIONS = pathlib.Path(__file__).resolve().parent / 'attestations'
+DEFAULT_ATTESTATIONS = pathlib.Path(__file__).resolve().parent / 'attestations'
+ATTESTATIONS = DEFAULT_ATTESTATIONS
 THREADS_QUERY = '''query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){
 pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}
 nodes{isResolved isOutdated resolvedBy{login} path line comments(first:100){nodes{author{login} body}}}}}}}'''
