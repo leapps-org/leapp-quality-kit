@@ -9,6 +9,10 @@
   "checks_only_repos": ["LAVA"],
   "holds": {"ALEAPP#99999": "example: waits on a second maintainer"},
   "mac_review_store": "~/Library/Application Support/{repo}/PR Review/reviews.sqlite3",
+  "mac_review_upstream_owners": ["your-github-login"],
+  "mac_review_guides": {
+    "iLEAPP": [".claude/skills/leapp-new-artifact/SKILL.md", "admin/docs/module_updates.md"]
+  },
 
   "repos_dir": "~/src",
   "python": "python3",
