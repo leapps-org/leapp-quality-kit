@@ -107,10 +107,38 @@ class Refresh(unittest.TestCase):
         self.assertEqual(self.deployed(), old)
 
     def test_a_held_lock_skips_the_run(self):
+        import fcntl
         self.cfg['releases'].mkdir()
-        (self.cfg['releases'] / '.lock').mkdir()
-        self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 2)
+        with open(self.cfg['releases'] / '.lock', 'a+') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 2)
         self.assertFalse(self.cfg['root'].exists())
+        self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 0)  # released with the holder
+
+    def test_a_test_that_changes_its_tree_is_not_promoted(self):
+        def scribbling(folder, python):
+            (folder / 'file.txt').write_text('changed by a test')
+            (folder / refresh.MARKER).write_text('f' * 40 + '\n')
+            return []
+        tip = git(self.origin, 'rev-parse', 'HEAD')
+        self.assertEqual(refresh.refresh(self.cfg, sys.executable, scribbling)[0], 0)
+        self.assertEqual((self.cfg['root'] / 'file.txt').read_text(), 'first')
+        self.assertEqual(self.deployed(), tip)
+
+    def test_a_cleanup_failure_after_the_switch_still_reports_the_switch(self):
+        refresh.refresh(self.cfg, sys.executable, passing)
+        tip = self.commit('second')
+        real = refresh.prune
+        refresh.prune = lambda *a: (_ for _ in ()).throw(PermissionError('x'))
+        try:
+            code, message = refresh.refresh(self.cfg, sys.executable, passing)
+        finally:
+            refresh.prune = real
+        self.assertEqual(code, 0)
+        self.assertIn('switched', message)
+        self.assertIn('cleanup', message)
+        self.assertEqual(self.deployed(), tip)
+
 
     def test_old_releases_are_pruned_to_keep(self):
         for n in range(5):
@@ -121,6 +149,24 @@ class Refresh(unittest.TestCase):
         self.assertEqual(len(releases), 3)  # the current one and two previous
         self.assertIn(self.cfg['root'].resolve(), [p.resolve() for p in releases])
 
+
+class Suites(unittest.TestCase):
+    def test_a_missing_suite_is_a_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            failures = refresh.run_tests(pathlib.Path(folder), sys.executable)
+        self.assertEqual(sorted(f.split(':')[0] for f in failures), sorted(refresh.SUITES))
+
+    def test_failures_carry_no_suite_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            for suite in refresh.SUITES:
+                (root / suite).mkdir()
+                (root / suite / 'test_x.py').write_text(
+                    'import unittest\nclass T(unittest.TestCase):\n    def test(self):\n'
+                    '        self.fail("SECRET-VALUE")\n')
+            failures = refresh.run_tests(root, sys.executable)
+        self.assertEqual(len(failures), len(refresh.SUITES))
+        self.assertFalse(any('SECRET' in f for f in failures))
 
 class Lag(unittest.TestCase):
     NOW = datetime.datetime(2026, 11, 26, 12, 0, tzinfo=datetime.timezone.utc)
@@ -146,6 +192,16 @@ class Lag(unittest.TestCase):
         warning, calls = self.check('b' * 40, 90)
         self.assertIn('WARNING', warning)
         self.assertIn('repos/example-org/leapp-quality-kit/commits/main', calls[0][1])
+
+    def test_only_github_com_itself_is_looked_up(self):
+        for remote in ('https://notgithub.com/o/r', 'https://github.com.example.net/o/r', '/local/path'):
+            with self.subTest(remote=remote):
+                warning, calls = self.check('b' * 40, 90, {'deploy': {'remote': remote}})
+                self.assertIn('NOTE', warning)
+                self.assertEqual(calls, [])
+        for remote in ('https://github.com/o/r', 'https://github.com/o/r.git', 'git@github.com:o/r.git'):
+            with self.subTest(remote=remote):
+                self.assertIn('WARNING', self.check('b' * 40, 90, {'deploy': {'remote': remote}})[0])
 
     def test_no_marker_or_no_deploy_block_is_quiet(self):
         self.assertIsNone(review_gate.deploy_lag(self.DEPLOY, pathlib.Path('/nonexistent')))

@@ -83,7 +83,8 @@ class CouldNotCheck(Exception):
 
 
 LAG_LIMIT = datetime.timedelta(hours=1)
-REMOTE = re.compile(r'github\.com[/:]([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9._-]+?)(?:\.git)?/?$')
+# The host must be github.com exactly (https://github.com/o/r or git@github.com:o/r), not a name ending in it.
+REMOTE = re.compile(r'^(?:https://|ssh://git@|git@)github\.com[/:]([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9._-]+?)(?:\.git)?/?$')
 
 
 def deploy_lag(data, kit_root=None, now=None, read=None):

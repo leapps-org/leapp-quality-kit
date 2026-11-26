@@ -26,6 +26,7 @@ Log: <work_dir>/deploy/refresh.log.
 """
 import argparse
 import datetime
+import fcntl
 import os
 import pathlib
 import shutil
@@ -129,6 +130,8 @@ def run_tests(folder, python):
     failures = []
     for suite in SUITES:
         if not (folder / suite).is_dir():
+            # A suite that disappears must not turn into a deploy with fewer tests.
+            failures.append(f'{suite}: folder missing')
             continue
         try:
             done = subprocess.run([python, '-B', '-m', 'unittest', 'discover', '-s', suite], cwd=folder,
@@ -138,8 +141,8 @@ def run_tests(folder, python):
             failures.append(f'{suite}: could not run ({type(error).__name__})')
             continue
         if done.returncode != 0:
-            tail = (done.stderr or done.stdout).strip().splitlines()[-3:]
-            failures.append(f'{suite}: exit {done.returncode}: {" | ".join(tail)[:300]}')
+            # Name and exit code only: suite output can echo config values, and this goes to a log and a notification.
+            failures.append(f'{suite}: exit {done.returncode}')
     return failures
 
 
@@ -166,16 +169,20 @@ def prune(releases, current, keep):
 
 def refresh(cfg, python, tests=run_tests):
     """One refresh. Returns (exit code, message)."""
-    lock = cfg['releases'] / '.lock'
     cfg['releases'].mkdir(parents=True, exist_ok=True)
+    # An advisory lock the OS drops when this process ends, so a crashed or slow run never needs a timeout.
+    lock = open(cfg['releases'] / '.lock', 'a+', encoding='utf-8')  # pylint: disable=consider-using-with
     try:
-        lock.mkdir()
-    except FileExistsError:
-        age = datetime.datetime.now().timestamp() - lock.stat().st_mtime
-        if age < 3600:
-            return 2, f'another refresh holds {lock} (age {int(age)} s)'
-        lock.rmdir()
-        lock.mkdir()
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 2, 'another refresh is running'
+        return _refresh_locked(cfg, python, tests)
+    finally:
+        lock.close()
+
+
+def _refresh_locked(cfg, python, tests):
     try:
         current = deployed_commit(cfg['root'])
         cache, tip = fetch(cfg)
@@ -187,26 +194,33 @@ def refresh(cfg, python, tests=run_tests):
         if staging.exists():
             shutil.rmtree(staging)
         export(cache, tip, staging)
-        failures = tests(staging, python)
+        try:
+            failures = tests(staging, python)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         if failures:
-            shutil.rmtree(staging)
             raise Refused(f'{tip[:8]} failed its tests, staying on {(current or "nothing")[:8]}: ' + '; '.join(failures))
+        # Promote a fresh export of the same commit, never the tree the tests ran in.
         final = cfg['releases'] / tip
-        if final.exists():
-            shutil.rmtree(final)
-        os.replace(staging, final)
+        fresh = cfg['releases'] / f'.promote-{tip}'
+        for old in (fresh, final):
+            if old.exists():
+                shutil.rmtree(old)
+        export(cache, tip, fresh)
+        os.replace(fresh, final)
         switch(cfg['root'], final)
-        removed = prune(cfg['releases'], final, cfg['keep'])
-        return 0, f'switched {(current or "nothing")[:8]} -> {tip[:8]}' + (f', removed {len(removed)} old' if removed else '')
     except Refused as error:
         return 1, f'REFUSED: {error}'
     except (CouldNotCheck, OSError, subprocess.SubprocessError) as error:
         return 2, f'COULD NOT CHECK: {error}'
-    finally:
-        try:
-            lock.rmdir()
-        except OSError:
-            pass
+    message = f'switched {(current or "nothing")[:8]} -> {tip[:8]}'
+    try:
+        removed = prune(cfg['releases'], final, cfg['keep'])
+        if removed:
+            message += f', removed {len(removed)} old'
+    except OSError as error:
+        message += f' (cleanup of old releases failed: {type(error).__name__})'
+    return 0, message
 
 
 def notify(message):
@@ -231,7 +245,9 @@ def main(argv=None):
     if args.status:
         try:
             print('deployed', deployed_commit(cfg['root']))
-            print('tip     ', fetch(cfg)[1])
+            # Read-only: ls-remote touches neither the cache nor the lock a scheduled refresh uses.
+            line = git('ls-remote', cfg['remote'], f"refs/heads/{cfg['branch']}")
+            print('tip     ', line.split()[0] if line else 'not found')
         except (Refused, CouldNotCheck) as error:
             print(error)
             return 2
