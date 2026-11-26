@@ -106,6 +106,19 @@ class Refresh(unittest.TestCase):
         self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 2)
         self.assertEqual(self.deployed(), old)
 
+    def test_it_works_from_a_deleted_working_folder(self):
+        gone = pathlib.Path(self.tmp.name) / 'gone'
+        gone.mkdir()
+        here = os.getcwd()
+        os.chdir(gone)
+        gone.rmdir()
+        try:
+            self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 0)
+            self.commit('second')
+            self.assertEqual(refresh.refresh(self.cfg, sys.executable, passing)[0], 0)
+        finally:
+            os.chdir(here)
+
     def test_a_git_failure_does_not_echo_the_remote(self):
         self.cfg['remote'] = 'https://someone:SECRET-TOKEN@127.0.0.1:9/none.git'
         code, message = refresh.refresh(self.cfg, sys.executable, passing)

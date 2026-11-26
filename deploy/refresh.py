@@ -43,6 +43,8 @@ RAN = re.compile(r'^Ran (\d+) tests? in ', re.M)
 SUITES = ('review-gate', 'notes-audit', 'number-recheck', 'mac-pr-reviewer', 'deploy')
 MARKER = 'DEPLOYED_COMMIT'
 TEST_TIMEOUT = 600
+# git runs from here, not from the caller's folder, which may have been deleted (git then exits 128).
+GIT_CWD = os.path.abspath(os.sep)
 
 
 class Refused(Exception):
@@ -74,7 +76,7 @@ def git(*args, cwd=None):
     """Run git. A failure reports the operation and exit code only: git's stderr can carry a remote URL with
     credentials, and this text reaches the log and the notification."""
     try:
-        done = subprocess.run(['git', *args], cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        done = subprocess.run(['git', *args], cwd=cwd or GIT_CWD, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=300, check=False)
     except subprocess.TimeoutExpired as error:
         raise CouldNotCheck(f'git {args[0]} timed out') from error
@@ -108,7 +110,7 @@ def fetch(cfg):
 
 
 def descends(cache, old, new):
-    done = subprocess.run(['git', '--git-dir', str(cache), 'merge-base', '--is-ancestor', old, new],
+    done = subprocess.run(['git', '--git-dir', str(cache), 'merge-base', '--is-ancestor', old, new], cwd=GIT_CWD,
                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False)
     if done.returncode not in (0, 1):
         raise CouldNotCheck(f'could not compare {old[:8]} and {new[:8]}: {done.stderr.strip()[:200]}')
@@ -116,7 +118,8 @@ def descends(cache, old, new):
 
 
 def export(cache, commit, target):
-    data = subprocess.run(['git', '--git-dir', str(cache), 'archive', '--format=tar', commit], stdin=subprocess.DEVNULL,
+    data = subprocess.run(['git', '--git-dir', str(cache), 'archive', '--format=tar', commit], cwd=GIT_CWD,
+                          stdin=subprocess.DEVNULL,
                           capture_output=True, timeout=300, check=False)
     if data.returncode != 0:
         raise CouldNotCheck(f'git archive failed: {data.stderr.decode(errors="replace")[:200]}')
