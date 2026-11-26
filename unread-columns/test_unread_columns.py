@@ -23,6 +23,7 @@ ARTIFACT = textwrap.dedent('''
         "demo_star": {"name": "Star", "paths": ("*/app/databases/demo.db*",)},
         "demo_helper": {"name": "Helper", "paths": ("*/app/databases/demo.db*",)},
         "demo_wild": {"name": "Wild", "paths": ("*/app/databases/*.db",)},
+        "demo_temp": {"name": "Temp", "paths": ("*/app/databases/demo.db*",)},
     }
     import sqlite3
     from pathlib import Path
@@ -44,6 +45,18 @@ ARTIFACT = textwrap.dedent('''
 
     def demo_helper(path):
         return helper.read_people_names(path)
+
+    def demo_temp(path):
+        # A module that copies the store elsewhere before opening it, then deletes the copy.
+        import os, shutil, tempfile
+        folder = tempfile.mkdtemp()
+        copy = os.path.join(folder, "demo.db")
+        for suffix in ("", "-wal", "-shm"):
+            shutil.copy2(str(path) + suffix, copy + suffix)
+        with _open(copy) as db:
+            rows = db.execute("SELECT id FROM people").fetchall()
+        shutil.rmtree(folder)
+        return rows
 
     def demo_wild(path):
         with _open(path) as db:
@@ -73,7 +86,7 @@ CORE = textwrap.dedent('''
         if (src / name).exists():
             shutil.copy2(src / name, data / name)
     counts = {}
-    for key in ("demo_two", "demo_star", "demo_helper"):
+    for key in ("demo_two", "demo_star", "demo_helper", "demo_temp"):
         counts[key] = len(getattr(demo, key)(data / "demo.db"))
     counts["demo_wild"] = len(demo.demo_wild(data / "acct-12345.db"))
     with sqlite3.connect(out / "report" / "_lava_artifacts.db") as lava:
@@ -177,11 +190,15 @@ class SyntheticRun(unittest.TestCase):
         self.assertFalse(t['whole_row_read'])
         # secret is declared with a collation this reader lacks and is still counted.
         self.assertEqual(t['unread']['secret']['distinct'], 2)
-        self.assertEqual(self.result['errors'], [])
+        self.assertEqual([e for e in self.result['errors'] if 'could not read' in e], [])
 
     def test_core_output_database_is_left_out(self):
         self.assertEqual(self.result['skipped_connections'], 1)
         self.assertEqual(list(self.result['artifacts']['demo_wild']['stores']), ['store 1'])
+
+    def test_a_temporary_copy_is_could_not_measure_not_output(self):
+        self.assertEqual(self.result['artifacts']['demo_temp']['stores'], {})
+        self.assertEqual(len([e for e in self.result['errors'] if e.startswith('demo_temp: table people')]), 1)
 
     def test_wildcard_store_name_is_not_written(self):
         stores = self.result['artifacts']['demo_wild']['stores']

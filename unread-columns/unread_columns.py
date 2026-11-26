@@ -176,13 +176,17 @@ def lava_artifacts(run_dir):
     return out
 
 
-def staged(path, run_dir, inputs):
-    """True for a store the run staged or read in place, False for the core's own output."""
+def placement(path, run_dir, inputs):
+    """'staged' for a store the run staged or read in place, 'output' for the core's own output
+    (the LAVA database, the timeline), 'elsewhere' for anything else, such as a temporary copy a
+    module made before opening it."""
+    resolved = Path(path).resolve()
     try:
-        rel = Path(path).resolve().relative_to(Path(run_dir).resolve())
+        rel = resolved.relative_to(Path(run_dir).resolve())
     except ValueError:
-        return any(Path(path).resolve().is_relative_to(Path(i).resolve()) for i in inputs)
-    return 'data' in rel.parts[:-1]
+        inside = any(resolved == Path(i).resolve() or resolved.is_relative_to(Path(i).resolve()) for i in inputs)
+        return 'staged' if inside else 'elsewhere'
+    return 'staged' if 'data' in rel.parts[:-1] else 'output'
 
 
 def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
@@ -217,8 +221,13 @@ def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
         copies = {}
         for (func, target, table), read in sorted(touched.items()):
             source = Path(target)
-            if not staged(source, run_dir, inputs):
+            where = placement(source, run_dir, inputs)
+            if where == 'output':
                 skipped += 1
+                continue
+            if where == 'elsewhere':
+                errors.append(f'{func}: table {table} was read from a file outside the staged data '
+                              '(a temporary copy the module made), so it was not measured')
                 continue
             if not source.is_file():
                 errors.append(f'{func}: a store it read is gone after the run')
@@ -265,7 +274,7 @@ def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
                 # A column one file reads and another file lacks or leaves unread counts as read.
                 t['unread'] = {c: v for c, v in t['unread'].items() if c not in t['read']}
                 t['columns'] = len(t.pop('all'))
-    result = {'artifacts': {}, 'skipped_connections': skipped, 'errors': errors,
+    result = {'artifacts': {}, 'skipped_connections': skipped, 'errors': sorted(set(errors)),
               'callback_errors': trace.get('callback_errors', 0), 'core_exit': trace.get('core_exit'),
               'lava_found': lava is not None}
     # Which profiled artifact reads each column, so a column one artifact leaves out and a sibling

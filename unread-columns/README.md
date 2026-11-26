@@ -54,7 +54,12 @@ key. A table read on a key where the artifact wrote no rows still describes the 
   a finding.
 - A store opened in memory, or attached under a name the trace could not tie to a file, is listed
   under "Could not measure".
+- A table a module reads from its own temporary copy (outside the staged data) is listed under
+  "Could not measure", since the copy is usually gone by the end of the run.
 - The core must finish and print `Report generation Completed`, or the key is "could not check".
+
+So far it has been run on ALEAPP only. The other cores take the same arguments, but their staging
+folders and wrappers have not been exercised with it.
 
 ## Sorting the list
 
