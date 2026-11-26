@@ -26,6 +26,13 @@
     "ledger": "~/.config/leapp-quality-kit/audited.json"
   },
   "recheck_weekly_cores": ["ALEAPP"],
+  "deploy": {
+    "root": "~/Tools/leapp-quality-kit",
+    "releases": "~/Tools/leapp-quality-kit-releases",
+    "remote": "https://github.com/your-github-login/leapp-quality-kit",
+    "branch": "main",
+    "keep": 2
+  },
 
   "corpus_roots": "/path/to/corpus/corpus-roots.json",
   "core_registries": {
