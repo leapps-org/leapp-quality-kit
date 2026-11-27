@@ -333,11 +333,15 @@ def by_no_artifact(info_by_artifact):
     for info in info_by_artifact.values():
         for label, store in info['stores'].items():
             for table, t in store.items():
-                seen = tables.setdefault((label, table), {'columns': t['columns'], 'copies': t['copies'],
-                                                          'readers': 0, 'unread': None})
+                seen = tables.setdefault((label, table), {'columns': 0, 'copies': 0, 'readers': 0, 'unread': {}})
                 seen['readers'] += 1
-                none_read = {c: v for c, v in t['unread'].items() if not v.get('read_by')}
-                seen['unread'] = none_read if seen['unread'] is None else seen['unread']
+                seen['columns'] = max(seen['columns'], t['columns'])
+                seen['copies'] = max(seen['copies'], t['copies'])
+                # Every artifact's list is merged: two artifacts can have read different files
+                # under one store name, and a column only one of those files has must stay.
+                for column, value in t['unread'].items():
+                    if not value.get('read_by'):
+                        seen['unread'].setdefault(column, value)
     return dict(sorted(tables.items()))
 
 

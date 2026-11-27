@@ -15,8 +15,11 @@ calls is credited to the caller). The file each connection opened comes from PRA
 database_list, run once right after the connect.
 
 The authorizer always returns SQLITE_OK and catches its own errors, so it cannot change what a
-statement does. Statements are grouped by SQLite's trace callback, which fires when a prepared
-statement starts to run, so a statement that read every column of a table can be told apart.
+statement does. Reads are held until SQLite's trace callback says the prepared statement started
+to run, which also groups them per statement, so a statement that read every column of a table can
+be told apart. Connections are opened with a Connection subclass whose execute calls drop the held
+reads when SQLite refuses the statement, so a query that fails part way through name resolution
+does not count the columns it resolved before failing.
 
 Nothing from the evidence is recorded: only file paths, table and column names, and counts.
 The trace is written when the core exits, also when it exits with an error.
@@ -56,8 +59,9 @@ def _record(conn, action, arg1, arg2, dbname, source):
             return
         owner = _artifact_frame()
         key = (owner[0], owner[1]) if owner else ('', '')
+        # Held until SQLite starts the statement, so the reads of a statement it rejects after
+        # authorizing some columns are dropped (see _guarded).
         with _LOCK:
-            conn['reads'].setdefault(key, set()).add((dbname or 'main', arg1, arg2))
             conn['pending'].setdefault(key, set()).add((dbname or 'main', arg1, arg2))
     elif action == sqlite3.SQLITE_ATTACH:
         with _LOCK:
@@ -65,9 +69,10 @@ def _record(conn, action, arg1, arg2, dbname, source):
 
 
 def _statement_started(conn):
-    """A prepared statement started to run: the reads since the last one belong to it."""
+    """A prepared statement started to run: the reads held since the last one belong to it."""
     with _LOCK:
         for key, reads in conn['pending'].items():
+            conn['reads'].setdefault(key, set()).update(reads)
             tables = {}
             for schema, table, column in reads:
                 tables.setdefault((schema, table), set()).add(column)
@@ -76,8 +81,56 @@ def _statement_started(conn):
         conn['pending'] = {}
 
 
+def _guarded(connection, run):
+    """Run one execute call. Reads held from an earlier statement that never started are dropped
+    first, and the reads of this one are dropped if SQLite refuses it."""
+    state = getattr(connection, '_unread_trace', None)
+    if state is None:
+        return run()
+    with _LOCK:
+        state['dropped'] += 1 if state['pending'] else 0
+        state['pending'] = {}
+    try:
+        return run()
+    except sqlite3.Error:
+        with _LOCK:
+            state['dropped'] += 1 if state['pending'] else 0
+            state['pending'] = {}
+        raise
+
+
+class TracedCursor(sqlite3.Cursor):
+    def execute(self, *args, **kwargs):
+        return _guarded(self.connection, lambda: super(TracedCursor, self).execute(*args, **kwargs))
+
+    def executemany(self, *args, **kwargs):
+        return _guarded(self.connection, lambda: super(TracedCursor, self).executemany(*args, **kwargs))
+
+    def executescript(self, *args, **kwargs):
+        return _guarded(self.connection, lambda: super(TracedCursor, self).executescript(*args, **kwargs))
+
+
+class TracedConnection(sqlite3.Connection):
+    """A connection whose execute calls go through _guarded. Behaves as sqlite3.Connection does."""
+
+    def cursor(self, *args, **kwargs):
+        if not args and 'factory' not in kwargs:
+            kwargs['factory'] = TracedCursor
+        return super().cursor(*args, **kwargs)
+
+    def execute(self, *args, **kwargs):
+        return self.cursor().execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        return self.cursor().executemany(*args, **kwargs)
+
+    def executescript(self, *args, **kwargs):
+        return self.cursor().executescript(*args, **kwargs)
+
+
 def _instrument(connection):
-    conn = {'files': {}, 'reads': {}, 'pending': {}, 'statements': [], 'attached': []}
+    conn = {'files': {}, 'reads': {}, 'pending': {}, 'statements': [], 'attached': [], 'dropped': 0,
+            'guarded': isinstance(connection, TracedConnection)}
     try:
         for row in connection.execute('PRAGMA database_list'):
             conn['files'][row[1]] = row[2] or ''
@@ -99,6 +152,8 @@ def _instrument(connection):
             with _LOCK:
                 _STATE['callback_errors'] += 1
 
+    if conn['guarded']:
+        connection._unread_trace = conn
     try:
         connection.set_authorizer(authorizer)
         connection.set_trace_callback(started)
@@ -111,9 +166,13 @@ def _instrument(connection):
 def traced_connect(*args, **kwargs):
     # A statement reused from the cache is not prepared again, so the authorizer would not see the
     # second artifact that runs the same SQL on a shared connection. Turn the cache off unless the
-    # caller set it (keyword, or the sixth positional argument).
-    if 'cached_statements' not in kwargs and len(args) < 6:
+    # caller set it (keyword, or the seventh positional argument).
+    if 'cached_statements' not in kwargs and len(args) < 7:
         kwargs['cached_statements'] = 0
+    # The subclass drops the reads of a statement SQLite refuses. A caller's own factory (the sixth
+    # positional argument) is left alone; its connections are traced without that guard.
+    if 'factory' not in kwargs and len(args) < 6:
+        kwargs['factory'] = TracedConnection
     connection = _REAL_CONNECT(*args, **kwargs)
     try:
         _instrument(connection)
@@ -133,17 +192,14 @@ def snapshot():
     with _LOCK:
         out = []
         for conn in _STATE['connections']:
-            for key, reads in conn['pending'].items():
-                tables = {}
-                for schema, table, column in reads:
-                    tables.setdefault((schema, table), set()).add(column)
-                for (schema, table), columns in tables.items():
-                    conn['statements'].append([key[0], key[1], schema, table, sorted(columns)])
+            # Reads still held at the end belong to a statement that never started.
+            conn['dropped'] += 1 if conn['pending'] else 0
             conn['pending'] = {}
             reads = [[m, f, s, t, c] for (m, f), cols in conn['reads'].items() for s, t, c in sorted(cols)]
             out.append({'files': conn['files'], 'reads': reads, 'statements': conn['statements'],
                         'attached': conn['attached'], 'not_instrumented': bool(conn.get('not_instrumented')),
-                        'files_error': bool(conn.get('files_error'))})
+                        'files_error': bool(conn.get('files_error')), 'guarded': conn['guarded'],
+                        'dropped_statements': conn['dropped']})
         return {'version': 1, 'connections': out, 'callback_errors': _STATE['callback_errors'],
                 'core_exit': _STATE['core_exit']}
 
