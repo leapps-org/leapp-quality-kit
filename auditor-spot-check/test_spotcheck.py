@@ -170,7 +170,7 @@ class EndToEnd(unittest.TestCase):
         self.module.write_text(MODULE, encoding='utf-8')
         self.runs = [make_run(root / 'runs', 'key_a', ROWS_A), make_run(root / 'runs', 'key_b', ROWS_B)]
         config = root / 'config.json'
-        config.write_text(json.dumps({'work_dir': str(root / 'work')}))
+        config.write_text(json.dumps({'work_dir': str(root / 'work'), 'github_owner': 'someone'}))
         self.env = {'LEAPP_QUALITY_CONFIG': str(config)}
         self.root = root
 
@@ -240,6 +240,28 @@ class EndToEnd(unittest.TestCase):
         reads.append({'type': 'tool_use', 'name': 'Read', 'input': {'file_path': str(self.module)}})
         transcript.write_text(json.dumps({'message': {'content': reads}}) + '\n')
         self.assertEqual(spotcheck.leaks(transcript, key, settings), {'path': 2, 'auditor-spot-check': 1, 'id': 1})
+
+    def test_leak_check_sees_a_read_of_an_earlier_audit(self):
+        _, key = self.plant()
+        transcript = self.root / 'agent.jsonl'
+        read = {'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'cat "/x/ALEAPP round 3/Findings.md"'}}
+        transcript.write_text(json.dumps({'message': {'content': [read]}}) + '\n')
+        config = {'work_dir': str(self.root / 'work'), 'github_owner': 'someone'}
+        settings = kit_config.spot_check(config)
+        self.assertEqual(spotcheck.leaks(transcript, key, settings), {})
+        hits = spotcheck.leaks(transcript, key, settings, kit_config.notes_audit_leak(config))
+        self.assertEqual(hits, {'earlier audit: Findings.md': 1})
+
+    def test_copy_without_clones(self):
+        old = spotcheck.sys.platform
+        spotcheck.sys.platform = 'linux'
+        try:
+            run_id, key = self.plant()
+        finally:
+            spotcheck.sys.platform = old
+        copy = pathlib.Path(key['copy'])
+        self.assertEqual((copy / 'src/scripts/artifacts/thing.py').read_text().count(key['sentence']), 1)
+        self.assertEqual(len(list((copy / 'run_output').iterdir())), 2)
 
 
 class Scoring(unittest.TestCase):

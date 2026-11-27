@@ -242,11 +242,17 @@ def pick(core, module, commit, found, shape=None):
 
 def clone(source, target):
     """Copy a tree with APFS clones where the volume allows it (instant, no extra space), else a plain copy."""
-    done = subprocess.run(['cp', '-cR', str(source), str(target)], capture_output=True, stdin=subprocess.DEVNULL)
-    if done.returncode != 0:
+    # Only macOS cp takes -c for a clone; GNU cp reads -c as something else.
+    if sys.platform == 'darwin':
+        done = subprocess.run(['cp', '-cR', str(source), str(target)], capture_output=True, stdin=subprocess.DEVNULL)
+        if done.returncode == 0:
+            return
         if Path(target).exists():
             raise OSError(f'cp -cR failed part way into {target}')
+    if Path(source).is_dir() and not Path(source).is_symlink():
         shutil.copytree(source, target, symlinks=True)
+    else:
+        shutil.copy2(source, target, follow_symlinks=False)
 
 
 def copy_tree(src, target):
@@ -451,8 +457,13 @@ def tool_inputs(transcript):
                 stack.extend(node)
 
 
-def leaks(transcript, record, settings):
-    """Reads that would let the auditor see the answer: the keys folder, the ledger, this tool, the originals."""
+def leaks(transcript, record, settings, earlier=None):
+    """Reads that would let the auditor see the answer: the keys folder, the ledger, this tool, the originals.
+
+    `earlier` is the notes audit's own leak pattern (kit_config.notes_audit_leak): it catches reads of an
+    earlier audit of the same module (Findings.md, results.json, the findings folder), transcripts, a
+    local core checkout and the core's GitHub history.
+    """
     needles = [str(settings['keys_dir']), settings['ledger'].name, 'auditor-spot-check', 'spotcheck',
                'leapp-quality-kit', record['id']] + record.get('originals', [])
     hits = collections.Counter()
@@ -465,10 +476,13 @@ def leaks(transcript, record, settings):
                     hits['id'] += 1
             elif needle in unescaped:
                 hits[needle if needle in ('auditor-spot-check', 'spotcheck', 'leapp-quality-kit') else 'path'] += 1
+        if earlier is not None:
+            for found in earlier.finditer(unescaped):
+                hits[f'earlier audit: {found.group(0)}'] += 1
     return dict(hits)
 
 
-def score(a, settings):
+def score(a, settings, earlier=None):
     key_file = settings['keys_dir'] / f'{a.id}.json'
     record = json.loads(key_file.read_text(encoding='utf-8'))
     ledger = settings['ledger']
@@ -479,7 +493,7 @@ def score(a, settings):
     if record['control']:
         # Nothing was planted, so any match means the scorer reads something else as the plant.
         outcome = 'no plant' if outcome == 'missed' else f'control matched ({outcome})'
-    leak = leaks(a.transcript, record, settings) if a.transcript else None
+    leak = leaks(a.transcript, record, settings, earlier) if a.transcript else None
     line = {'id': record['id'], 'scored': date.today().isoformat(), 'core': record['core'], 'module': record['module'],
             'commit': record['commit'], 'artifact': record['artifact'], 'shape': record['shape'],
             'control': record['control'], 'outcome': outcome, 'verdict': hit and hit.get('verdict'),
@@ -532,7 +546,8 @@ def main(argv=None):
     sub.add_parser('report', help='catch rate from the ledger')
     a = parser.parse_args(argv)
     try:
-        settings = kit_config.spot_check(kit_config.load())
+        config = kit_config.load()
+        settings = kit_config.spot_check(config)
     except kit_config.ConfigError as error:
         sys.exit(f'FAIL {error}')
     if a.command == 'should':
@@ -543,7 +558,11 @@ def main(argv=None):
         except (ValueError, OSError) as error:
             sys.exit(f'FAIL {error}')
     elif a.command == 'score':
-        score(a, settings)
+        try:
+            earlier = kit_config.notes_audit_leak(config)
+        except kit_config.ConfigError as error:
+            sys.exit(f'FAIL the leak check needs the notes audit settings: {error}')
+        score(a, settings, earlier)
     else:
         report(settings)
 

@@ -15,8 +15,8 @@ merge.
 
 It answers yes when `sha256("<CORE>:<module>:<commit>")` mod `every` is 0 (`every` is 10 unless the
 config says otherwise). The same module at the same commit always gets the same answer, so a run
-cannot be picked or skipped by asking twice. On ALEAPP at one commit it chose 72 of 623 modules
-(11.6%).
+cannot be picked or skipped by asking twice. On ALEAPP at 3b8635f2 it chose 72 of the 623 `.py`
+files under `scripts/artifacts` (11.6%).
 
 ## Making the copy
 
@@ -38,7 +38,7 @@ Each run output folder is named by its corpus key and holds one report folder, t
      number-like values and no time word in its header. This one is unsupported rather than shown
      false, so the report keeps it apart.
 3. Copies the code tree (without `.git`) and the run outputs to `<copies_dir>/<CORE> audit <id>/`,
-   with APFS clones where the volume allows. It adds the sentence to the end of the artifact's notes
+   with APFS clones on macOS and a plain copy elsewhere. It adds the sentence to the end of the artifact's notes
    in the copied module and in each copied `_lava_data.lava` (the report embeds the notes, so a
    copy with only the code changed would give the plant away). It parses both back to check the
    sentence is there once and nothing else changed. Only plain string notes are planted, never an
@@ -63,7 +63,10 @@ An omission or an "add" verdict is never a catch. Anything else is missed. On a 
 is "no plant", and any match means the scorer is reading something else as the plant.
 
 The transcript check looks for reads of the answer keys, the ledger, this tool, the kit, or the
-original code and run output (which the auditor could diff against the copy). A run with a hit is
+original code and run output (which the auditor could diff against the copy). It also applies the
+notes audit's own leak pattern, which catches an earlier audit of the same module (`Findings.md`,
+`results.json`, the findings folder), transcripts, a local core checkout and GitHub history. So
+`score` needs the config's `github_owner`. A run with a hit is
 left out of the rate.
 
 The ledger line holds the id, module, artifact, shape, outcome, the matching finding's verdict and
@@ -100,9 +103,10 @@ the real run output of its corpus keys. One `leapp-notes-auditor` run per copy, 
 | waze | pixel7a_a14, sharon_a14 | meaning | caught (remove, data-proven) | 9 |
 | mastodon (control) | pixel7a_a14 | none | no plant | 14 |
 
-The leak check was clean on all five transcripts. Each run's statement finding count is close to what
-round 3 flagged for the same module (3, 13, 13, 8 and 11), so the copy did not change how the auditor
-worked beyond the one sentence.
+The outcomes were scored from each auditor's reply as it came back. The leak check was clean on all
+five transcripts. Round 3 had flagged 3, 13, 13, 8 and 11 statements in the same modules, in table
+order. With one run per module, that comparison says nothing about how much the count varies between
+runs.
 
 Four of four caught is a small sample, and every plant was easy to measure: the count contradicted the
 module's own `sample_data`, the `always` plant failed one count of empty cells, and the `meaning`
