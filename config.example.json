@@ -25,6 +25,12 @@
     "findings_dir": "{work_dir}/notes-audit-findings/{date} round {round} ({core})",
     "ledger": "~/.config/leapp-quality-kit/audited.json"
   },
+  "spot_check": {
+    "every": 10,
+    "copies_dir": "{work_dir}/leapp-audit-input",
+    "keys_dir": "{work_dir}/auditor-spot-check/keys",
+    "ledger": "{work_dir}/auditor-spot-check/ledger.jsonl"
+  },
   "recheck_weekly_cores": ["ALEAPP"],
   "unread_columns": {"out_dir": "{work_dir}/unread-columns"},
   "deploy": {
