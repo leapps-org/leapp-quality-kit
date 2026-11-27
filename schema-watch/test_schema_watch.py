@@ -186,7 +186,7 @@ class Filing(unittest.TestCase):
             self.assertIn('new_key', q.read_text())
 
     def test_public_key_dry_run_searches_and_files_nothing(self):
-        reg = {'new_key': {'public': True}, 'old_key': {'public': True}, 'secret_key': {'public': False}}
+        reg = {'new_key': {'public': True}, 'old_key': {'public': True}, 'secret_key': {'public': True}}
         calls = []
         with patch.object(sw, 'run', side_effect=lambda cmd, **kw: calls.append(cmd) or Done()):
             sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, '/nonexistent/q.md', True, log=lambda *_: None)
@@ -198,15 +198,49 @@ class Filing(unittest.TestCase):
         body = sw.issue_body('ALEAPP', 'abc', 'a.py', [RESULT], reg)
         self.assertIn('old_key', body)
         self.assertNotIn('secret_key', body)
-        self.assertIn(sw.MARKER.format(module='a.py', key='new_key'), body)
+        self.assertIn(sw.MARKER.format(module='a.py', key='new_key@'), body)
 
     def test_key_already_in_an_open_issue_is_not_filed_again(self):
-        reg = {'new_key': {'public': True}, 'old_key': {'public': True}}
-        body = json.dumps([{'number': 1, 'body': sw.MARKER.format(module='a.py', key='new_key')}]).encode()
+        reg = {'new_key': {'public': True, 'sha256': 'c' * 64}, 'old_key': {'public': True}, 'secret_key': {'public': True}}
+        body = json.dumps([{'number': 1, 'body': sw.MARKER.format(module='a.py', key='new_key@' + 'c' * 12)}]).encode()
         calls = []
         with patch.object(sw, 'run', side_effect=lambda cmd, **kw: calls.append(cmd) or Done(body)):
             sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, '/nonexistent/q.md', False, log=lambda *_: None)
         self.assertFalse(any('create' in c for c in calls))
+
+
+class Review(unittest.TestCase):
+    def test_a_private_baseline_keeps_a_public_key_off_github(self):
+        reg = {'new_key': {'public': True}, 'old_key': {'public': True}, 'secret_key': {'public': False}}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(sw, 'run', side_effect=AssertionError):
+            q = pathlib.Path(tmp) / 'q.md'
+            filed, private, problems = sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, q, False, log=lambda *_: None)
+            self.assertEqual(private, ['a.py'])
+            self.assertEqual(q.stat().st_mode & 0o077, 0)
+
+    def test_a_recaptured_key_is_not_covered_by_the_old_issue(self):
+        reg = {'new_key': {'public': True, 'sha256': 'b' * 64}, 'old_key': {'public': True},
+               'secret_key': {'public': True}}
+        old = json.dumps([{'number': 1, 'body': sw.MARKER.format(module='a.py', key='new_key@' + 'a' * 12)}]).encode()
+        calls = []
+        with patch.object(sw, 'run', side_effect=lambda cmd, **kw: calls.append(cmd) or Done(old)):
+            sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, '/nonexistent/q.md', True, log=lambda *_: None)
+        self.assertEqual(len(calls), 1)  # searched, and the dry run would file
+
+    def test_a_failed_create_names_its_module(self):
+        reg = {'new_key': {'public': True}, 'old_key': {'public': True}, 'secret_key': {'public': True}}
+        def fake(cmd, **kw):
+            return Done(b'[]') if 'list' in cmd else Done(b'', code=1)
+        with patch.object(sw, 'run', side_effect=fake):
+            _f, _p, problems = sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, '/nonexistent/q.md', False,
+                                              log=lambda *_: None)
+        self.assertEqual(problems, ['a.py'])
+
+    def test_origin_must_match_the_filing_repo(self):
+        for url, ok in (('https://github.com/me/ALEAPP.git', True), ('git@github.com:me/ALEAPP.git', True),
+                        ('https://github.com/fork/ALEAPP', False), ('https://github.com/me/ALEAPP-old', False)):
+            with patch.object(sw, 'run', return_value=Done(url.encode())):
+                self.assertEqual(sw.origin_is('/x', 'me', 'ALEAPP'), ok, url)
 
 
 class State(unittest.TestCase):

@@ -13,15 +13,20 @@ and never blocks a merge.
 The state file `<work_dir>/schema-watch/state.json` maps each key it has seen to the sha256 its
 registry gave. A key that is not there, or is there with a different sha256 (a re-capture), is new.
 Run `--init` once: it records every registered key as seen and compares nothing, so the first daily
-run does not treat the whole corpus as new. A key that could not be checked is left unseen and is
-tried again the next day. `--keys` compares the keys you name and leaves the state file alone.
+run does not treat the whole corpus as new. Only a run with `--file-issues` (and not `--dry-run`)
+marks keys as seen, so a report-only run leaves them for the daily run. A key that could not be
+checked is left unseen and is tried again the next day: a failed read, a member that could not be
+copied, a cited key that could not be read for a module, or a filing that failed. `--keys` compares
+the keys you name and leaves the state file alone. A registry the corpus roots catalog names but
+that is not there is reported, and the run exits 2.
 
 Each key is checked against the core whose registry holds it, from `core_registries` in the config.
 A key in a registry no core is mapped to is logged and skipped.
 
 ## What an artifact was built on
 
-For each module on the core's `origin/main` (read with `git archive`, so no checkout is touched):
+For each module on the core's `origin/main`, resolved once to a commit and read with `git archive`
+(so no checkout is touched):
 
 1. Its `paths` are matched against the key's member names the way the LEAPP seekers match them:
    `fnmatch` on `"root/" + name`, where `*` also crosses folders.
@@ -37,12 +42,13 @@ For each module on the core's `origin/main` (read with `git archive`, so no chec
 
 The new key's stores are then compared with the baseline. A table, column or preference name is
 "in no cited key" when none of the cited keys' copies of that store has it. A name is "missing here"
-only when every cited key that has the store has it, so a column one phone maker adds is not
+only when every compared cited key that has the store has it, so a column one phone maker adds is not
 reported as missing on every other maker's key. A missing name that also appears as a word in a
 string in the module's source is marked "named in the module". That is a source-token match, not
 a trace of what the code reads. A store the module matches in the new key but in none of its cited
 keys is listed as having no baseline. A store that could not be read (an encrypted database, for
-example) is listed as not compared. It is never reported as unchanged and files nothing.
+example) is listed as not compared, and a module with nothing else to report gets the status "not
+compared", never "unchanged". It files nothing.
 
 Before comparing, SQLite's own tables (`sqlite_sequence`, `sqlite_stat1` and the rest) and
 `android_metadata` are dropped, because they appear with use or with the framework, not with the
@@ -67,13 +73,15 @@ hold table, column, preference, module and key names and counts. No row values a
 
 `--file-issues` files one `audit-queue` issue in `<owner>/<core>` per changed module, covering
 all of that run's new keys for it. The body ends with one hidden marker per key,
-`<!-- schema-watch module=NAME key=KEY -->`. A key already in an open issue's marker is not filed
-again. `--dry-run` prints what would be filed and writes no state.
+`<!-- schema-watch module=NAME key=KEY@SHA -->`, where SHA is the first 12 characters of the key's
+registry sha256. A key and capture already in an open issue's marker is not filed again; a
+re-captured key is. Before filing, the core checkout's `origin` must be `github.com/<owner>/<core>`. `--dry-run` prints what would be filed and writes no state.
 
-Only a new key whose registry entry has `"allow_public_metadata": true` goes to GitHub. A missing
-or false value counts as private: the finding is appended to the private queue file instead
-(`private_queue` in the config, default `<work_dir>/schema-watch/private-queue.md`). In a public
-issue the baseline keys are also named only when they are public; the rest are counted.
+A finding goes to GitHub only when the new key and every cited key it was compared with have
+`"allow_public_metadata": true` in their registry entries, because the finding is computed from
+both. A missing or false value counts as private: the finding is appended to the private queue
+file instead (`private_queue` in the config, default `<work_dir>/schema-watch/private-queue.md`),
+which is created readable by its owner only.
 
 Exit 0 means every new key was compared and every filing worked. Exit 2 means something could not
 be checked (config, corpus drive, a key or a filing); the report says what.

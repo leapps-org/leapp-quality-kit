@@ -68,13 +68,17 @@ def registries(roots_file):
             skip = set(root.get('exclude_top_level', []))
             found += [p for p in sorted(base.glob(root.get('registry_pattern', '*/samples.json')))
                       if p.parent.name not in skip]
-    return [p for p in found if p.is_file()]
+    return found
 
 
 def registered_keys(roots_file):
-    """key -> {"registry", "file", "sha256", "public"}. A key in two registries keeps the first."""
-    out = {}
+    """(key -> {"registry", "file", "sha256", "public"}, registries named but not there).
+    A key in two registries keeps the first."""
+    out, absent = {}, []
     for reg in registries(roots_file):
+        if not reg.is_file():
+            absent.append(str(reg))
+            continue
         for key, entry in json.loads(reg.read_text(encoding='utf-8')).get('samples', {}).items():
             if key in out or not isinstance(entry, dict):
                 continue
@@ -84,17 +88,21 @@ def registered_keys(roots_file):
                         'sha256': match.get('sha256') or '',
                         # Fail closed: only an explicit true lets a key be named in a public issue.
                         'public': entry.get('allow_public_metadata') is True}
-    return out
+    return out, absent
 
 
 # ---------------------------------------------------------------- modules
 
 def core_modules(repo):
     """{module file name: {"patterns": [...], "keys": [...], "tokens": set()}} from origin/main."""
-    done = run(['git', '-C', str(repo), 'archive', '--format=tar', 'origin/main', 'scripts/artifacts'])
+    sha = run(['git', '-C', str(repo), 'rev-parse', '--verify', 'origin/main^{commit}']).stdout.decode().strip()
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise RuntimeError(f'could not resolve origin/main in {repo}')
+    # The same commit is archived and reported, even if origin/main moves in between.
+    done = run(['git', '-C', str(repo), 'archive', '--format=tar', sha, 'scripts/artifacts'])
     if done.returncode != 0:
         raise RuntimeError(f'git archive failed in {repo}: {done.stderr.decode(errors="replace")[:200]}')
-    commit = run(['git', '-C', str(repo), 'rev-parse', '--short', 'origin/main']).stdout.decode().strip()
+    commit = sha[:10]
     modules = {}
     with tarfile.open(fileobj=io.BytesIO(done.stdout)) as tf:
         for member in sorted(tf.getmembers(), key=lambda m: m.name):
@@ -329,9 +337,12 @@ def index_key(key, entry, patterns, cache_dir, tmp_root):
             Path(tmp_root).mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
                 local = source.copy_out(copy, tmp)
+                lost = [n for n in need if n not in local]
+                if lost:
+                    # Not cached, so the next run tries again.
+                    raise RuntimeError(f'{len(lost)} matched member(s) could not be copied out')
                 for n in need:
-                    data['stores'][n] = read_store(local[n], n) if n in local else \
-                        {'kind': 'unreadable', 'error': 'not copied'}
+                    data['stores'][n] = read_store(local[n], n)
         cache.parent.mkdir(parents=True, exist_ok=True)
         part = cache.with_suffix('.part')
         part.write_text(json.dumps(data), encoding='utf-8')
@@ -457,17 +468,17 @@ def finding_lines(found):
             if c['tables_added']:
                 lines.append(f"  - tables in no cited key ({len(c['tables_added'])}): {', '.join(c['tables_added'])}")
             if c['tables_gone']:
-                lines.append(f"  - tables every cited key has, missing here ({len(c['tables_gone'])}): {gone(c['tables_gone'])}")
+                lines.append(f"  - tables every compared cited key has, missing here ({len(c['tables_gone'])}): {gone(c['tables_gone'])}")
             for t, cols in c['columns_added'].items():
                 lines.append(f"  - `{t}` columns in no cited key ({len(cols)}): {', '.join(cols)}")
             for t, cols in c['columns_gone'].items():
-                lines.append(f"  - `{t}` columns every cited key has, missing here ({len(cols)}): {gone(cols)}")
+                lines.append(f"  - `{t}` columns every compared cited key has, missing here ({len(cols)}): {gone(cols)}")
         else:
             label = 'preference names' if c['kind'] == 'prefs' else 'plist keys'
             if c['names_added']:
                 lines.append(f"  - {label} in no cited key ({len(c['names_added'])}): {', '.join(c['names_added'])}")
             if c['names_gone']:
-                lines.append(f"  - {label} every cited key has, missing here ({len(c['names_gone'])}): {gone(c['names_gone'])}")
+                lines.append(f"  - {label} every compared cited key has, missing here ({len(c['names_gone'])}): {gone(c['names_gone'])}")
     for c in found.get('no_baseline', []):
         lines.append(f"- `{c['store']}`: in this key but in none of the cited keys ({c['kind']}, {c['count']} names)")
     for c in found.get('not_compared', []):
@@ -548,8 +559,16 @@ def check_core(core, repo, keys, reg, cache_dir, tmp_root, jobs, log=print):
                 results.append({'key': key, 'module': name, 'status': 'baseline unreadable', 'found': {},
                                 'baseline_keys': m['keys']})
                 continue
+            unread = sorted(k for k in m['keys'] if k in reg and k not in base_index)
+            if unread:
+                # A cited key that could not be read now may answer next time; compare nothing until it does.
+                failed.setdefault(key, f'cited key(s) could not be read for {name}: {", ".join(unread)}')
+                results.append({'key': key, 'module': name, 'status': 'baseline incomplete', 'found': {},
+                                'baseline_keys': m['keys']})
+                continue
             found = compare(m, stores, usable)
-            results.append({'key': key, 'module': name, 'status': 'changed' if is_change(found) else 'unchanged',
+            status = 'changed' if is_change(found) else 'not compared' if found.get('not_compared') else 'unchanged'
+            results.append({'key': key, 'module': name, 'status': status,
                             'found': found, 'baseline_keys': sorted(usable),
                             'baseline_missing': sorted(k for k in m['keys'] if k not in usable)})
     return commit, results, failed
@@ -574,7 +593,9 @@ def write_report(out, runs, failed, skipped):
             extra = finding_lines(r['found'])
             if extra:
                 lines += [f"### {r['module']} on {r['key']} (unchanged, notes)", ''] + extra + ['']
-        for status in ('no cited keys', 'baseline unreadable'):
+        for r in by.get('not compared', []):
+            lines += [f"### {r['module']} on {r['key']} (not compared)", ''] + finding_lines(r['found']) + ['']
+        for status in ('no cited keys', 'baseline unreadable', 'baseline incomplete'):
             if by.get(status):
                 lines += [f'### {status}', ''] + [f"- {r['module']} on {r['key']}" for r in by[status]] + ['']
     if failed:
@@ -586,6 +607,11 @@ def write_report(out, runs, failed, skipped):
 
 MARKER = '<!-- schema-watch module={module} key={key} -->'
 MARKER_RE = re.compile(r'<!-- schema-watch module=(\S+) key=(\S+) -->')
+
+
+def capture(key, reg):
+    """A key plus its capture, so a re-captured key is not taken as covered by an issue about the old one."""
+    return f"{key}@{((reg.get(key) or {}).get('sha256') or '')[:12]}"
 
 
 def issue_body(core, commit, module, items, reg, public_only=True):
@@ -602,7 +628,7 @@ def issue_body(core, commit, module, items, reg, public_only=True):
     lines += ['A column or table marked "named in the module" appears in the module source, so a query may now fail '
               'or return less. Added names may hold data the artifact does not report. Look at the store, then '
               'decide: update the artifact, add `sample_data` for the new key, or close this as expected.', '']
-    lines += [MARKER.format(module=module, key=r['key']) for r in items]
+    lines += [MARKER.format(module=module, key=capture(r['key'], reg)) for r in items]
     return '\n'.join(lines)
 
 
@@ -622,7 +648,8 @@ def covered_keys(repo, module):
 
 def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=print):
     """One audit-queue issue per changed module, for new keys that allow public metadata. Changes on any
-    other key go to the private queue file, never to GitHub. Returns (filed, private, problems)."""
+    other key, or with a private cited key behind them, go to the private queue file, never to GitHub.
+    Returns (filed, private, modules whose filing failed)."""
     repo = f'{owner}/{core}'
     changed = {}
     for r in results:
@@ -630,15 +657,17 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
             changed.setdefault(r['module'], []).append(r)
     filed, private, problems = [], [], []
     for module in sorted(changed):
-        public = [r for r in changed[module] if (reg.get(r['key']) or {}).get('public')]
+        # A finding is computed from the baseline too, so it is public only when every key behind it is.
+        public = [r for r in changed[module] if all((reg.get(k) or {}).get('public')
+                                                    for k in [r['key'], *r['baseline_keys']])]
         hidden = [r for r in changed[module] if r not in public]
         if public:
             have = covered_keys(repo, module)
             if have is None:
-                problems.append(f'could not search issues for {module}')
+                problems.append(module)
                 log(f'  {module}: could not search issues, not filed')
             else:
-                todo = [r for r in public if r['key'] not in have]
+                todo = [r for r in public if capture(r['key'], reg) not in have]
                 if not todo:
                     log(f'  {module}: open issue already covers these keys, not filed')
                 else:
@@ -651,7 +680,7 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
                                     '--title', title, '--body-file', '-'], input=body.encode())
                         text = (made.stdout or made.stderr).decode(errors='replace').strip()
                         log(f'  {module}: {text[:200]}')
-                        (filed if made.returncode == 0 else problems).append(text[:200])
+                        (filed if made.returncode == 0 else problems).append(text[:200] if made.returncode == 0 else module)
         if hidden:
             entry = [f"## {datetime.date.today().isoformat()} {core} {module} (schema watch)", '',
                      issue_body(core, commit, module, hidden, reg, public_only=False), '']
@@ -659,7 +688,9 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
                 log(f'  would add to the private queue: {core} {module} on {", ".join(r["key"] for r in hidden)}')
             else:
                 Path(private_queue).parent.mkdir(parents=True, exist_ok=True)
-                with open(private_queue, 'a', encoding='utf-8') as f:
+                # Owner-only: the file names private keys and their stores.
+                fd = os.open(private_queue, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                with open(fd, 'a', encoding='utf-8') as f:
                     f.write('\n' + '\n'.join(entry))
                 log(f'  {module}: added to the private queue ({len(hidden)} key(s))')
             private.append(module)
@@ -697,6 +728,14 @@ def core_of(reg_entry, core_registries):
     return None
 
 
+def origin_is(repo, owner, name):
+    """True when the checkout's origin is github.com/<owner>/<name> (https or ssh, with or without .git)."""
+    url = run(['git', '-C', str(repo), 'remote', 'get-url', 'origin']).stdout.decode().strip()
+    want = f'{owner}/{name}'.lower()
+    path = re.sub(r'\.git$', '', re.sub(r'^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)', '', url.lower()))
+    return path.rstrip('/') == want
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--init', action='store_true', help='record every registered key as seen and stop')
@@ -723,7 +762,9 @@ def main(argv=None):
     if not roots.is_file():
         print(f'COULD NOT CHECK: {roots} is not there (corpus drive not mounted?)', file=sys.stderr)
         return 2
-    reg = registered_keys(roots)
+    reg, absent = registered_keys(roots)
+    for where in absent:
+        print(f'COULD NOT CHECK: registry {where} is named in the corpus roots catalog but is not there', file=sys.stderr)
     state_file = work / 'state.json'
     state = load_state(state_file)
     if args.init:
@@ -762,6 +803,11 @@ def main(argv=None):
         if not (repo / '.git').exists():
             failed.update({k: f'no checkout at {repo}' for k in ks})
             continue
+        who = (owners.get(core.lower()) or owner) if args.file_issues else None
+        if who and not origin_is(repo, who, core):
+            # Findings from one repository must not be filed in another.
+            failed.update({k: f'origin of {repo} is not {who}/{core}' for k in ks})
+            continue
         if run(['git', '-C', str(repo), 'fetch', '-q', 'origin']).returncode != 0:
             failed.update({k: 'git fetch failed' for k in ks})
             continue
@@ -774,24 +820,23 @@ def main(argv=None):
         failed.update(bad)
         runs[core] = (commit, results)
         if args.file_issues:
-            who = owners.get(core.lower()) or owner
             _filed, _private, probs = file_issues(who, core, commit, results, reg, private_queue, args.dry_run)
             problems += probs
             # A module whose filing failed keeps its keys unseen, so the next run tries again.
-            if probs:
-                for r in results:
-                    if r['status'] == 'changed' and any(r['module'] in p for p in probs):
-                        failed.setdefault(r['key'], 'issue filing failed')
+            for r in results:
+                if r['status'] == 'changed' and r['module'] in probs:
+                    failed.setdefault(r['key'], f"issue filing failed for {r['module']}")
     write_report(out, runs, failed, skipped)
     (out / 'results.json').write_text(json.dumps({c: {'commit': cm, 'results': rs} for c, (cm, rs) in runs.items()}
                                                  | {'could_not_check': failed, 'skipped': skipped}, indent=1),
                                       encoding='utf-8')
     print(f'report: {out / "report.md"}')
-    if not args.keys and not args.dry_run:
+    # Only a run that files advances the state, so a report-only run leaves the keys for the daily one.
+    if not args.keys and args.file_issues and not args.dry_run:
         done = [k for ks in by_core.values() for k in ks if k not in failed] + skipped
         state['seen'].update({k: reg[k]['sha256'] for k in done})
         save_state(state_file, state)
-    return 2 if failed or problems else 0
+    return 2 if failed or problems or absent else 0
 
 
 if __name__ == '__main__':
