@@ -152,12 +152,22 @@ class Measuring(unittest.TestCase):
     def test_patch_lava_keeps_layout(self):
         lava = spotcheck.report_folder(self.runs['key_a']) / '_lava_data.lava'
         old = spotcheck.meta_of(MODULE)['thing_events']['notes']
-        spotcheck.patch_lava(lava, 'thing', 'thing_events', old, old + ' Planted.')
+        spotcheck.patch_lava(lava, 'thing', 'thing_events', old, old + ' Planted.', self.runs['key_a'])
         text = lava.read_text()
         self.assertEqual(json.dumps(json.loads(text), indent=4), text)
         self.assertEqual(text.count('Planted.'), 1)
         with self.assertRaises(ValueError):
-            spotcheck.patch_lava(lava, 'thing', 'thing_events', old, old + ' Again.')
+            spotcheck.patch_lava(lava, 'thing', 'thing_events', old, old + ' Again.', self.runs['key_a'])
+
+    def test_no_write_through_a_symlink(self):
+        root = pathlib.Path(self.tmp.name)
+        (root / 'copy').mkdir()
+        (root / 'copy' / 'link').symlink_to(root / 'key_a')
+        with self.assertRaises(ValueError):
+            spotcheck.inside(root / 'copy' / 'link' / 'x.lava', root / 'copy')
+        with self.assertRaises(ValueError):
+            spotcheck.inside(root / 'elsewhere.txt', root / 'copy')
+        self.assertEqual(spotcheck.inside(root / 'copy' / 'a' / 'b.py', root / 'copy'), root / 'copy' / 'a' / 'b.py')
 
 
 class EndToEnd(unittest.TestCase):
@@ -219,7 +229,9 @@ class EndToEnd(unittest.TestCase):
             self.run_main('score', run_id, str(reply))
         ledger = (self.root / 'work/auditor-spot-check/ledger.jsonl').read_text()
         self.assertNotIn('problem', ledger)
-        self.assertIn('caught 1 of 1', self.run_main('report'))
+        report = self.run_main('report')
+        self.assertIn('left out: 1 not run', report)
+        self.assertIn('caught 0 of 0', report)
 
     def test_control_plants_nothing_and_scores_no_plant(self):
         run_id, key = self.plant('--control')
@@ -250,7 +262,46 @@ class EndToEnd(unittest.TestCase):
         settings = kit_config.spot_check(config)
         self.assertEqual(spotcheck.leaks(transcript, key, settings), {})
         hits = spotcheck.leaks(transcript, key, settings, kit_config.notes_audit_leak(config))
-        self.assertEqual(hits, {'earlier audit: Findings.md': 1})
+        self.assertEqual(hits, {'earlier audit': 1})
+
+    def test_two_run_outputs_with_one_name_are_refused(self):
+        twin = make_run(self.root / 'other', 'key_a', ROWS_B)
+        with self.assertRaises(SystemExit):
+            self.run_main('plant', '--core', 'ALEAPP', '--module', 'thing', '--src', str(self.root / 'src'),
+                          '--run-output', str(self.runs[0]), str(twin))
+
+    def test_a_checkout_answers_for_its_commit(self):
+        import subprocess
+        src = self.root / 'repo'
+        src.mkdir()
+        git = lambda *a: subprocess.run(['git', '-C', str(src), *a], check=True, capture_output=True, text=True,
+                                        stdin=subprocess.DEVNULL).stdout.strip()
+        git('init', '-q')
+        (src / 'f.txt').write_text('x')
+        git('add', 'f.txt')
+        git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'x')
+        head = git('rev-parse', 'HEAD')
+        self.assertEqual(spotcheck.commit_of(src, None), head)
+        self.assertEqual(spotcheck.commit_of(src, head[:8]), head)
+        with self.assertRaises(ValueError):
+            spotcheck.commit_of(src, 'deadbeef')
+        (src / 'f.txt').write_text('y')
+        self.assertEqual(spotcheck.commit_of(src, None), head + '-dirty')
+        self.assertEqual(spotcheck.commit_of(self.root / 'src', 'c1'), 'c1')
+
+    def test_an_unreadable_transcript_is_not_clean(self):
+        run_id, key = self.plant()
+        reply = self.root / 'reply.txt'
+        reply.write_text(json.dumps({'findings': [{'kind': 'statement', 'quote': key['sentence'], 'verdict': 'remove',
+                                                   'tier': 'secret text'}]}))
+        bad = self.root / 'bad.jsonl'
+        bad.write_text('{not json\n')
+        out = self.run_main('score', run_id, str(reply), '--transcript', str(bad))
+        self.assertIn('leak check could not check', out)
+        line = json.loads((self.root / 'work/auditor-spot-check/ledger.jsonl').read_text())
+        self.assertIsNone(line['tier'])
+        self.assertIn('with a clean leak check 0', self.run_main('report'))
+        self.assertIn('caught 0 of 0', self.run_main('report'))
 
     def test_copy_without_clones(self):
         old = spotcheck.sys.platform
@@ -271,7 +322,9 @@ class Scoring(unittest.TestCase):
         f = lambda quote, verdict='remove', kind='statement': {'kind': kind, 'quote': quote, 'verdict': verdict}
         m = lambda found: spotcheck.match(found, self.SENTENCE, 'count')[0]
         self.assertEqual(m([f(self.SENTENCE)]), 'caught')
-        self.assertEqual(m([f('this artifact reports 9 rows')]), 'caught')
+        self.assertEqual(m([f('key_a this artifact reports 9 rows')]), 'caught')
+        # The claim without its key could be about another key's count.
+        self.assertEqual(m([f('this artifact reports 9 rows')]), 'unclear')
         self.assertEqual(m([f(self.SENTENCE, 'keep')]), 'missed')
         self.assertEqual(m([f(self.SENTENCE, 'add', 'omission')]), 'missed')
         self.assertEqual(m([f('Times are UTC.')]), 'missed')
@@ -286,7 +339,16 @@ class Scoring(unittest.TestCase):
         found = [{'kind': 'statement', 'quote': 'Created Timestamp', 'verdict': 'soften'}]
         self.assertEqual(spotcheck.match(found, sentence, 'always')[0], 'missed')
         found.append({'kind': 'statement', 'quote': 'column is filled on every row', 'verdict': 'remove'})
+        self.assertEqual(spotcheck.match(found, sentence, 'always')[0], 'unclear')
+        found.append({'kind': 'statement', 'quote': 'Status Created Timestamp column is filled on every row', 'verdict': 'remove'})
         self.assertEqual(spotcheck.match(found, sentence, 'always')[0], 'caught')
+
+    def test_a_finding_on_another_artifact_or_field_is_unclear(self):
+        f = lambda **kw: [{'kind': 'statement', 'quote': self.SENTENCE, 'verdict': 'soften', **kw}]
+        m = lambda found: spotcheck.match(found, self.SENTENCE, 'count', 'thing_events')[0]
+        self.assertEqual(m(f(artifact='thing_events', field='notes')), 'caught')
+        self.assertEqual(m(f(artifact='thing_users', field='notes')), 'unclear')
+        self.assertEqual(m(f(artifact='thing_events', field='description')), 'unclear')
 
     def test_every_shape_has_a_claim(self):
         self.assertEqual(spotcheck.claim_of('meaning', 'The X column holds the time the item was deleted.'),

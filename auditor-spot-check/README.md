@@ -40,11 +40,15 @@ Each run output folder is named by its corpus key and holds one report folder, t
 3. Copies the code tree (without `.git`) and the run outputs to `<copies_dir>/<CORE> audit <id>/`,
    with APFS clones on macOS and a plain copy elsewhere. It adds the sentence to the end of the artifact's notes
    in the copied module and in each copied `_lava_data.lava` (the report embeds the notes, so a
-   copy with only the code changed would give the plant away). It parses both back to check the
+   copy with only the code changed would give the plant away). It refuses to write through a symlink
+   or outside the copy, and refuses two run output folders with the same key name. It parses both back to check the
    sentence is there once and nothing else changed. Only plain string notes are planted, never an
    f-string.
 4. Writes the answer key `<keys_dir>/<id>.json` and the auditor prompt `<keys_dir>/<id>.prompt.txt`.
    The prompt is the notes-audit workflow's prompt for one module, with the JSON reply spelled out.
+
+When `--src` is a git checkout, the commit comes from the checkout (with `-dirty` if it has changes)
+and a `--commit` that disagrees is refused. For an exported tree, `--commit` is taken as given.
 
 `--control` makes the same copy and key but plants nothing. `--shape` picks the shape.
 
@@ -56,9 +60,12 @@ type). Save its reply to a file, then:
     python3 auditor-spot-check/spotcheck.py score <id> <reply file> --transcript <agent transcript .jsonl>
 
 Caught means a `statement` finding with verdict soften or remove whose quote holds the sentence's
-false claim ("reports N rows", "is filled on every row", "holds the time the item was deleted") with
-little else around it. A quote of the header alone is not a catch, since the header was already
-there. A quote that holds the claim inside a much longer passage is "unclear", for a person to read.
+false claim ("reports N rows", "is filled on every row", "holds the time the item was deleted") and
+its subject (the corpus key or column header), with little else around it. Where the finding names an
+artifact or field, it must be the planted artifact's notes. A quote of the header alone is not a
+catch, since the header was already there. The claim without its subject, a finding placed on another
+artifact or field, or a quote that holds the sentence inside a much longer passage is "unclear", for a
+person to read.
 An omission or an "add" verdict is never a catch. Anything else is missed. On a control, the outcome
 is "no plant", and any match means the scorer is reading something else as the plant.
 
@@ -67,14 +74,16 @@ original code and run output (which the auditor could diff against the copy). It
 notes audit's own leak pattern, which catches an earlier audit of the same module (`Findings.md`,
 `results.json`, the findings folder), transcripts, a local core checkout and GitHub history. So
 `score` needs the config's `github_owner`. A run with a hit is
-left out of the rate.
+left out of the rate. So is a run scored without a transcript, or with one the check cannot read
+(a line that is not JSON, or no tool calls at all).
 
 The ledger line holds the id, module, artifact, shape, outcome, the matching finding's verdict and
-tier, and the finding counts. It never holds the auditor's own text, which can describe evidence.
+tier (only one of the three documented tiers), and the finding counts. It never holds the auditor's own text, which can describe evidence.
 
     python3 auditor-spot-check/spotcheck.py report
 
-prints caught of total per shape, the rate over the two measured-false shapes, and the controls.
+prints caught of total per shape, the rate over the two measured-false shapes, and the controls,
+counting only runs whose leak check came back clean. The others are counted apart.
 
 ## Settings
 

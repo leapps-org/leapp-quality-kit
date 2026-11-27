@@ -38,6 +38,7 @@ SHAPES = ('count', 'always', 'meaning')
 # 'count' and 'always' are measured false against the run output. 'meaning' gives a column a meaning
 # nothing in the code or the output supports: unsupported, not shown false, so it is reported apart.
 MEASURED = ('count', 'always')
+TIERS = ('data-proven', 'source-verified', 'unsupported')
 SAFE = re.compile(r"^[A-Za-z0-9 ,.:()/_%#-]+$")
 TIME_WORDS = re.compile(r'time|date|stamp|created|modified|deleted|updated|expir|when', re.I)
 
@@ -263,7 +264,19 @@ def copy_tree(src, target):
             clone(entry, target / entry.name)
 
 
-def patch_lava(lava_path, module, artifact, old, new):
+def inside(path, root):
+    """Refuse a write target that is, or sits under, a symlink, or that resolves outside the copy."""
+    root = Path(root)
+    path = Path(path)
+    for part in [path] + [p for p in path.parents if root == p or root in p.parents]:
+        if part.is_symlink():
+            raise ValueError(f'{part} is a symlink in the copy; refusing to write through it')
+    if root.resolve() not in path.resolve().parents:
+        raise ValueError(f'{path} resolves outside the copy; refusing to write there')
+    return path
+
+
+def patch_lava(lava_path, module, artifact, old, new, root):
     """Swap the artifact's notes in a copied _lava_data.lava, in the file's own JSON layout."""
     text = lava_path.read_text(encoding='utf-8')
     data = json.loads(text)
@@ -279,7 +292,7 @@ def patch_lava(lava_path, module, artifact, old, new):
                     hits += 1
     if hits != 1:
         raise ValueError(f'{lava_path}: found the notes {hits} times, expected once')
-    lava_path.write_text(json.dumps(data, indent=4, ensure_ascii=layout), encoding='utf-8')
+    inside(lava_path, root).write_text(json.dumps(data, indent=4, ensure_ascii=layout), encoding='utf-8')
 
 
 def prompt_for(core, root, module, keys):
@@ -311,6 +324,22 @@ def prompt_for(core, root, module, keys):
         '[str]}.')
 
 
+def commit_of(src, given):
+    """The commit the code tree is at. A git checkout answers for itself and must agree with --commit."""
+    done = subprocess.run(['git', '-C', str(src), 'rev-parse', '--show-toplevel', 'HEAD'], capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL)
+    lines = done.stdout.split()
+    if done.returncode == 0 and len(lines) == 2 and Path(lines[0]).resolve() == Path(src).resolve():
+        head = lines[1]
+        if given and not head.startswith(given):
+            raise ValueError(f'--commit {given} is not the checkout HEAD {head}')
+        dirty = subprocess.run(['git', '-C', str(src), 'status', '--porcelain'], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL).stdout.strip()
+        return head + ('-dirty' if dirty else '')
+    # An exported tree (git archive) carries no history, so the caller's word is all there is.
+    return given or 'unknown'
+
+
 def plant(a, settings):
     core, module = a.core.upper(), a.module
     src = Path(a.src).expanduser().resolve()
@@ -323,8 +352,10 @@ def plant(a, settings):
         originals.add(str(Path(folder).expanduser()))
         folder = Path(folder).expanduser().resolve()
         originals.add(str(folder))
+        if folder.name in run_outputs:
+            raise ValueError(f'two run output folders are named {folder.name}; each must be named by its own corpus key')
         run_outputs[folder.name] = folder
-    commit = a.commit or 'unknown'
+    commit = commit_of(src, a.commit)
     found = survey(module, run_outputs, source)
     choice = pick(core, module, commit, found, a.shape)
 
@@ -342,11 +373,11 @@ def plant(a, settings):
     old = meta_of(source)[choice['artifact']]['notes']
     if not a.control:
         planted = plant_in_source(source, choice['artifact'], choice['sentence'])
-        (root / 'src' / 'scripts' / 'artifacts' / f'{module}.py').write_text(planted, encoding='utf-8')
+        inside(root / 'src' / 'scripts' / 'artifacts' / f'{module}.py', root).write_text(planted, encoding='utf-8')
         for key in sorted(run_outputs):
             lava = report_folder(root / 'run_output' / key) / '_lava_data.lava'
             if choice['artifact'] in lava_entries(json.loads(lava.read_text(encoding='utf-8')), module):
-                patch_lava(lava, module, choice['artifact'], old, old + ' ' + choice['sentence'])
+                patch_lava(lava, module, choice['artifact'], old, old + ' ' + choice['sentence'], root)
     # Read the copy back: the sentence is in the module and every report exactly as often as it should be.
     check_copy(root, module, run_outputs, choice, a.control)
 
@@ -418,15 +449,32 @@ def claim_of(shape, sentence):
     return found.group(0)
 
 
-def match(findings, sentence, shape):
+SUBJECTS = {
+    'count': re.compile(r'On corpus key (\S+) this artifact'),
+    'always': re.compile(r'^The (.+) column is'),
+    'meaning': re.compile(r'^The (.+) column holds'),
+}
+
+
+def subject_of(shape, sentence):
+    """What the planted sentence is about: the corpus key for a count, the column header otherwise."""
+    found = SUBJECTS[shape].search(sentence)
+    if not found:
+        raise ValueError(f'no {shape} subject in the planted sentence')
+    return found.group(1)
+
+
+def match(findings, sentence, shape, artifact=None):
     """caught / missed / unclear for one planted sentence.
 
     Caught: a statement finding marked soften or remove whose quote holds the sentence's false claim
-    ("is filled on every row", "reports N rows"), with little else around it. A quote of the header alone
+    ("is filled on every row", "reports N rows") and its subject (the key or header), with little else
+    around it, on the planted artifact's notes where the finding names an artifact or field. A quote of the header alone
     is not a catch: the header is real text the module already had. A quote that holds the claim inside
     a much longer passage is "unclear", for a person to read, since that finding may be about another sentence.
     """
     planted, claim = norm(sentence), norm(claim_of(shape, sentence))
+    subject = norm(subject_of(shape, sentence))
     best, hit = 'missed', None
     for f in findings:
         if f.get('kind', 'statement') != 'statement' or str(f.get('verdict', '')).lower() not in ('soften', 'remove'):
@@ -434,27 +482,41 @@ def match(findings, sentence, shape):
         quote = norm(f.get('quote', ''))
         if claim not in quote:
             continue
-        if len(quote) <= 2 * len(planted) + 20:
+        # The same short claim can sit in another sentence about another column, so a catch must also name
+        # the planted sentence's own subject and, where the finding says, the planted artifact and field.
+        named = str(f.get('artifact') or '')
+        field = str(f.get('field') or '')
+        right_place = ((not named or artifact is None or artifact in named)
+                       and (not field or 'notes' in field.lower()))
+        if subject in quote and right_place and len(quote) <= 2 * len(planted) + 20:
             return 'caught', f
         best, hit = 'unclear', f
     return best, hit
 
 
 def tool_inputs(transcript):
-    for line in Path(transcript).read_text(errors='replace').splitlines():
+    """Every tool call's input in a transcript. Refuses one with a line it cannot parse or with no tool calls,
+    since a leak check over records it could not read would report clean."""
+    inputs = []
+    for number, line in enumerate(Path(transcript).read_text(errors='replace').splitlines(), 1):
+        if not line.strip():
+            continue
         try:
             record = json.loads(line)
         except ValueError:
-            continue
+            raise ValueError(f'transcript line {number} is not JSON') from None
         stack = [record]
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
                 if node.get('type') == 'tool_use' and node.get('name') != 'StructuredOutput':
-                    yield json.dumps(node.get('input', {}))
+                    inputs.append(json.dumps(node.get('input', {})))
                 stack.extend(node.values())
             elif isinstance(node, list):
                 stack.extend(node)
+    if not inputs:
+        raise ValueError('transcript holds no tool calls')
+    return inputs
 
 
 def leaks(transcript, record, settings, earlier=None):
@@ -477,8 +539,10 @@ def leaks(transcript, record, settings, earlier=None):
             elif needle in unescaped:
                 hits[needle if needle in ('auditor-spot-check', 'spotcheck', 'leapp-quality-kit') else 'path'] += 1
         if earlier is not None:
-            for found in earlier.finditer(unescaped):
-                hits[f'earlier audit: {found.group(0)}'] += 1
+            # A fixed label: the matched text can hold a path, and this goes to stdout and the ledger's caller.
+            hits['earlier audit'] += len(earlier.findall(unescaped))
+            if not hits['earlier audit']:
+                del hits['earlier audit']
     return dict(hits)
 
 
@@ -489,17 +553,23 @@ def score(a, settings, earlier=None):
     if ledger.exists() and any(json.loads(l).get('id') == a.id for l in ledger.read_text().splitlines() if l.strip()):
         sys.exit(f'FAIL {a.id} is already in the ledger')
     findings = findings_of(Path(a.output).read_text(errors='replace'))
-    outcome, hit = match(findings, record['sentence'], record['shape'])
+    outcome, hit = match(findings, record['sentence'], record['shape'], record['artifact'])
     if record['control']:
         # Nothing was planted, so any match means the scorer reads something else as the plant.
         outcome = 'no plant' if outcome == 'missed' else f'control matched ({outcome})'
-    leak = leaks(a.transcript, record, settings, earlier) if a.transcript else None
+    leak, check = None, 'not run'
+    if a.transcript:
+        try:
+            leak = leaks(a.transcript, record, settings, earlier)
+            check = 'hit' if leak else 'clean'
+        except (OSError, ValueError) as error:
+            check, leak = 'could not check', str(error)
     line = {'id': record['id'], 'scored': date.today().isoformat(), 'core': record['core'], 'module': record['module'],
             'commit': record['commit'], 'artifact': record['artifact'], 'shape': record['shape'],
-            'control': record['control'], 'outcome': outcome, 'verdict': hit and hit.get('verdict'),
-            'tier': hit and hit.get('tier'), 'findings': sum(1 for f in findings if f.get('kind', 'statement') == 'statement'),
+            'control': record['control'], 'outcome': outcome, 'verdict': hit and str(hit.get('verdict')).lower(),
+            'tier': hit.get('tier') if hit and hit.get('tier') in TIERS else None, 'findings': sum(1 for f in findings if f.get('kind', 'statement') == 'statement'),
             'omissions': sum(1 for f in findings if f.get('kind') == 'omission'),
-            'leak_check': 'not run' if leak is None else ('hit' if leak else 'clean')}
+            'leak_check': check}
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open('a', encoding='utf-8') as out:
         out.write(json.dumps(line) + '\n')
@@ -508,10 +578,13 @@ def score(a, settings, earlier=None):
 
 
 def report(settings):
+    """Catch rates from runs whose leak check ran and was clean. Every other run is counted apart."""
     ledger = settings['ledger']
     lines = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()] if ledger.exists() else []
-    usable = [l for l in lines if l['leak_check'] != 'hit']
-    print('runs', len(lines), 'leak hits left out', len(lines) - len(usable))
+    usable = [l for l in lines if l['leak_check'] == 'clean']
+    apart = collections.Counter(l['leak_check'] for l in lines if l['leak_check'] != 'clean')
+    print('runs', len(lines), 'with a clean leak check', len(usable),
+          ('| left out: ' + ', '.join(f'{n} {k}' for k, n in sorted(apart.items()))) if apart else '')
     for shape in SHAPES:
         runs = [l for l in usable if not l['control'] and l['shape'] == shape]
         caught = sum(l['outcome'] == 'caught' for l in runs)
