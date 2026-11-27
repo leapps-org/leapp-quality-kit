@@ -55,10 +55,12 @@ type). Save its reply to a file, then:
 
     python3 auditor-spot-check/spotcheck.py score <id> <reply file> --transcript <agent transcript .jsonl>
 
-Caught means a `statement` finding with verdict soften or remove whose quote is the planted sentence,
-or a part of it, or holds it with little else around it. A quote that holds it inside a much longer
-passage is "unclear", for a person to read. Anything else is missed. On a control, the outcome is
-"no plant", and any match means the scorer is reading something else as the plant.
+Caught means a `statement` finding with verdict soften or remove whose quote holds the sentence's
+false claim ("reports N rows", "is filled on every row", "holds the time the item was deleted") with
+little else around it. A quote of the header alone is not a catch, since the header was already
+there. A quote that holds the claim inside a much longer passage is "unclear", for a person to read.
+An omission or an "add" verdict is never a catch. Anything else is missed. On a control, the outcome
+is "no plant", and any match means the scorer is reading something else as the plant.
 
 The transcript check looks for reads of the answer keys, the ledger, this tool, the kit, or the
 original code and run output (which the auditor could diff against the copy). A run with a hit is
@@ -87,7 +89,30 @@ are committed. Delete a copy by hand once its run is scored.
 
 ## First runs
 
-RESULTS
+Five runs on 2026-11-26, on ALEAPP modules from notes-audit round 3 (main at 3b8635f2), each with
+the real run output of its corpus keys. One `leapp-notes-auditor` run per copy, through the Agent tool.
+
+| Module | Corpus keys | Shape | Outcome | Statement findings |
+|---|---|---|---|---|
+| wellbeing | kevin_pocox7_a15, pixel7a_a14 | count | caught (soften, data-proven) | 4 |
+| cmhTags | anne_a15, sharon_a14 | count | caught (soften, data-proven) | 18 |
+| kwai | emu_a15_oss2_v3 | always | caught (remove, data-proven) | 15 |
+| waze | pixel7a_a14, sharon_a14 | meaning | caught (remove, data-proven) | 9 |
+| mastodon (control) | pixel7a_a14 | none | no plant | 14 |
+
+The leak check was clean on all five transcripts. Each run's statement finding count is close to what
+round 3 flagged for the same module (3, 13, 13, 8 and 11), so the copy did not change how the auditor
+worked beyond the one sentence.
+
+Four of four caught is a small sample, and every plant was easy to measure: the count contradicted the
+module's own `sample_data`, the `always` plant failed one count of empty cells, and the `meaning`
+plant contradicted the code that fills the column. It shows the loop works end to
+end. It does not show a catch rate yet.
+
+The control found a bug in the first scorer. That scorer counted any quote that was a substring of the
+planted sentence, so a finding about the header "Created Timestamp" matched the would-be plant "The
+Status Created Timestamp column is filled on every row." on a copy where nothing was planted. A catch
+now has to quote the false claim itself ("is filled on every row"), and a test pins that case.
 
 ## Limits
 
