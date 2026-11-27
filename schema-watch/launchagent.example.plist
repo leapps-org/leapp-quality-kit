@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Example only. Replace /path/to/leapp-quality-kit, copy to ~/Library/LaunchAgents/, then
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.leapps.schema-watch.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.leapps.schema-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/path/to/leapp-quality-kit/schema-watch/daily.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>/tmp/org.leapps.schema-watch.err</string>
+</dict>
+</plist>

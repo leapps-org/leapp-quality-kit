@@ -26,9 +26,9 @@ jobs:
           LEAPP_QUALITY_CONFIG: /nonexistent/config.json
         run: |
           set -e
-          for folder in review-gate notes-audit number-recheck mac-pr-reviewer unread-columns deploy auditor-spot-check; do
+          for folder in review-gate notes-audit number-recheck mac-pr-reviewer unread-columns deploy auditor-spot-check schema-watch; do
             echo "== $folder"
             python -B -m unittest discover -s "$folder"
           done
       - name: Shell syntax
-        run: bash -n notes-audit/run_corpus.sh && bash -n number-recheck/weekly.sh
+        run: bash -n notes-audit/run_corpus.sh && bash -n number-recheck/weekly.sh && bash -n schema-watch/daily.sh

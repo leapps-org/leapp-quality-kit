@@ -40,7 +40,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import kit_config  # noqa: E402
 
 RAN = re.compile(r'^Ran (\d+) tests? in ', re.M)
-SUITES = ('review-gate', 'notes-audit', 'number-recheck', 'mac-pr-reviewer', 'unread-columns', 'deploy', 'auditor-spot-check')
+SUITES = ('review-gate', 'notes-audit', 'number-recheck', 'mac-pr-reviewer', 'unread-columns', 'deploy', 'auditor-spot-check', 'schema-watch')
 MARKER = 'DEPLOYED_COMMIT'
 TEST_TIMEOUT = 600
 # git runs from here, not from the caller's folder, which may have been deleted (git then exits 128).
