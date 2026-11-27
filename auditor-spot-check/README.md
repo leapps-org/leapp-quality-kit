@@ -59,17 +59,21 @@ type). Save its reply to a file, then:
 
     python3 auditor-spot-check/spotcheck.py score <id> <reply file> --transcript <agent transcript .jsonl>
 
+The reply must end with the JSON object the prompt asks for. A reply without one (empty, cut off, or
+only a markdown table) is refused and nothing goes in the ledger.
+
 Caught means a `statement` finding with verdict soften or remove whose quote holds the sentence's
-false claim ("reports N rows", "is filled on every row", "holds the time the item was deleted") and
-its subject (the corpus key or column header), with little else around it. Where the finding names an
-artifact or field, it must be the planted artifact's notes. A quote of the header alone is not a
+subject and false claim together ("Watched (ms) column is filled on every row", "key K this artifact
+reports N rows"), with little else around it. Where the finding names an artifact or field, it must be
+exactly the planted artifact and `notes`. A quote of the header alone is not a
 catch, since the header was already there. The claim without its subject, a finding placed on another
 artifact or field, or a quote that holds the sentence inside a much longer passage is "unclear", for a
 person to read.
 An omission or an "add" verdict is never a catch. Anything else is missed. On a control, the outcome
 is "no plant", and any match means the scorer is reading something else as the plant.
 
-The transcript check looks for reads of the answer keys, the ledger, this tool, the kit, or the
+The transcript must belong to the run: one of its tool calls reads this run's copy, and every quote
+in the scored reply appears in it. Otherwise the check is "could not check". It then looks for reads of the answer keys, the ledger, this tool, the kit, or the
 original code and run output (which the auditor could diff against the copy). It also applies the
 notes audit's own leak pattern, which catches an earlier audit of the same module (`Findings.md`,
 `results.json`, the findings folder), transcripts, a local core checkout and GitHub history. So

@@ -247,11 +247,12 @@ class EndToEnd(unittest.TestCase):
         reads = [{'type': 'tool_use', 'name': 'Read', 'input': {'file_path': key['copy'] + '/src/scripts/artifacts/thing.py'}}]
         transcript.write_text(json.dumps({'message': {'content': reads}}) + '\n')
         settings = kit_config.spot_check({'work_dir': str(self.root / 'work')})
-        self.assertEqual(spotcheck.leaks(transcript, key, settings), {})
+        self.assertEqual(spotcheck.leaks(spotcheck.records_of(transcript), key, settings), {})
         reads.append({'type': 'tool_use', 'name': 'Bash', 'input': {'command': f"cat {settings['keys_dir']}/{run_id}.json"}})
         reads.append({'type': 'tool_use', 'name': 'Read', 'input': {'file_path': str(self.module)}})
         transcript.write_text(json.dumps({'message': {'content': reads}}) + '\n')
-        self.assertEqual(spotcheck.leaks(transcript, key, settings), {'path': 2, 'auditor-spot-check': 1, 'id': 1})
+        self.assertEqual(spotcheck.leaks(spotcheck.records_of(transcript), key, settings),
+                         {'path': 2, 'auditor-spot-check': 1, 'id': 1})
 
     def test_leak_check_sees_a_read_of_an_earlier_audit(self):
         _, key = self.plant()
@@ -260,8 +261,9 @@ class EndToEnd(unittest.TestCase):
         transcript.write_text(json.dumps({'message': {'content': [read]}}) + '\n')
         config = {'work_dir': str(self.root / 'work'), 'github_owner': 'someone'}
         settings = kit_config.spot_check(config)
-        self.assertEqual(spotcheck.leaks(transcript, key, settings), {})
-        hits = spotcheck.leaks(transcript, key, settings, kit_config.notes_audit_leak(config))
+        records = spotcheck.records_of(transcript)
+        self.assertEqual(spotcheck.leaks(records, key, settings), {})
+        hits = spotcheck.leaks(records, key, settings, kit_config.notes_audit_leak(config))
         self.assertEqual(hits, {'earlier audit': 1})
 
     def test_two_run_outputs_with_one_name_are_refused(self):
@@ -288,6 +290,63 @@ class EndToEnd(unittest.TestCase):
         (src / 'f.txt').write_text('y')
         self.assertEqual(spotcheck.commit_of(src, None), head + '-dirty')
         self.assertEqual(spotcheck.commit_of(self.root / 'src', 'c1'), 'c1')
+
+    def test_a_checkout_whose_path_has_a_space(self):
+        import subprocess
+        src = self.root / 'a repo'
+        src.mkdir()
+        subprocess.run(['git', '-C', str(src), 'init', '-q'], check=True, stdin=subprocess.DEVNULL)
+        (src / 'f.txt').write_text('x')
+        subprocess.run(['git', '-C', str(src), 'add', 'f.txt'], check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(['git', '-C', str(src), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q',
+                        '-m', 'x'], check=True, stdin=subprocess.DEVNULL)
+        with self.assertRaises(ValueError):
+            spotcheck.commit_of(src, 'deadbeef')
+
+    def transcript(self, key, reply_text, reads_copy=True):
+        path = self.root / 'agent.jsonl'
+        target = key['copy'] + '/src/scripts/artifacts/thing.py' if reads_copy else '/elsewhere/thing.py'
+        records = [{'message': {'role': 'assistant', 'content': [
+                        {'type': 'tool_use', 'name': 'Read', 'input': {'file_path': target}}]}},
+                   {'message': {'role': 'assistant', 'content': [
+                        {'type': 'tool_use', 'name': 'SubagentHandback', 'input': {'message': reply_text}}]}}]
+        path.write_text(''.join(json.dumps(r) + '\n' for r in records))
+        return path
+
+    def test_a_matching_transcript_is_clean_and_counts(self):
+        run_id, key = self.plant()
+        text = json.dumps({'findings': [{'kind': 'statement', 'artifact': 'thing_events', 'field': 'notes',
+                                         'quote': key['sentence'], 'verdict': 'remove', 'tier': 'data-proven'}]})
+        reply = self.root / 'reply.txt'
+        reply.write_text(text)
+        out = self.run_main('score', run_id, str(reply), '--transcript', str(self.transcript(key, text)))
+        self.assertIn('-> caught', out)
+        self.assertIn('leak check clean', out)
+        self.assertIn('always   caught 1 of 1', self.run_main('report'))
+
+    def test_a_transcript_from_another_run_is_not_clean(self):
+        run_id, key = self.plant()
+        text = json.dumps({'findings': [{'kind': 'statement', 'quote': key['sentence'], 'verdict': 'remove'}]})
+        reply = self.root / 'reply.txt'
+        reply.write_text(text)
+        other = json.dumps({'findings': [{'kind': 'statement', 'quote': 'Something else.', 'verdict': 'remove'}]})
+        out = self.run_main('score', run_id, str(reply), '--transcript', str(self.transcript(key, other)))
+        self.assertIn('could not check the scored reply is not in the transcript', out)
+        run2, key2 = self.plant()
+        reply.write_text(json.dumps({'findings': [{'kind': 'statement', 'quote': key2['sentence'], 'verdict': 'remove'}]}))
+        out = self.run_main('score', run2, str(reply), '--transcript', str(self.transcript(key2, reply.read_text(), False)))
+        self.assertIn("could not check the transcript never reads this run's copy", out)
+
+    def test_a_reply_with_no_findings_object_is_not_scored(self):
+        run_id, _ = self.plant()
+        reply = self.root / 'reply.txt'
+        for text in ('', 'The audit table was cut off here {"claims_checked": 3, "findi'):
+            reply.write_text(text)
+            with self.assertRaises(SystemExit):
+                self.run_main('score', run_id, str(reply))
+        self.assertFalse((self.root / 'work/auditor-spot-check/ledger.jsonl').exists())
+        reply.write_text(json.dumps({'findings': []}))
+        self.assertIn('-> missed', self.run_main('score', run_id, str(reply)))
 
     def test_an_unreadable_transcript_is_not_clean(self):
         run_id, key = self.plant()
@@ -349,6 +408,16 @@ class Scoring(unittest.TestCase):
         self.assertEqual(m(f(artifact='thing_events', field='notes')), 'caught')
         self.assertEqual(m(f(artifact='thing_users', field='notes')), 'unclear')
         self.assertEqual(m(f(artifact='thing_events', field='description')), 'unclear')
+        # Names that only contain the planted ones are other artifacts and fields.
+        self.assertEqual(m(f(artifact='thing_events_extra', field='notes')), 'unclear')
+        self.assertEqual(m(f(artifact='thing_events', field='notes or header')), 'unclear')
+        self.assertEqual(m(f(artifact='thing_users, thing_events', field='notes')), 'caught')
+
+    def test_the_subject_must_sit_with_the_claim(self):
+        sentence = 'The Label column is filled on every row.'
+        found = [{'kind': 'statement', 'verdict': 'soften',
+                  'quote': 'Label is shown as stored. The Kind column is filled on every row.'}]
+        self.assertEqual(spotcheck.match(found, sentence, 'always')[0], 'unclear')
 
     def test_every_shape_has_a_claim(self):
         self.assertEqual(spotcheck.claim_of('meaning', 'The X column holds the time the item was deleted.'),
@@ -361,11 +430,11 @@ class Scoring(unittest.TestCase):
                 + json.dumps({'findings': [{'kind': 'statement', 'quote': 'q', 'verdict': 'soften'}]}) + '\n```')
         self.assertEqual(spotcheck.findings_of(text), [{'kind': 'statement', 'quote': 'q', 'verdict': 'soften'}])
 
-    def test_falls_back_to_the_markdown_table(self):
+    def test_a_markdown_table_alone_is_not_scored(self):
         text = '| # | Field | Claim | Tier | Support | Verdict |\n|---|---|---|---|---|---|\n' \
-               f'| 1 | notes | "{self.SENTENCE}" | unsupported | count is 3 | remove |\n' \
-               '| 2 | notes | "Times are UTC." | source-verified | line 9 | keep |\n'
-        self.assertEqual(spotcheck.match(spotcheck.findings_of(text), self.SENTENCE, 'count')[0], 'caught')
+               f'| 1 | notes | "{self.SENTENCE}" | unsupported | count is 3 | remove |\n'
+        with self.assertRaises(ValueError):
+            spotcheck.findings_of(text)
 
 
 class Config(unittest.TestCase):

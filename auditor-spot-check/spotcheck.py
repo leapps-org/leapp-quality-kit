@@ -15,6 +15,10 @@ auditor's catch rate. The real module, PR and run output are never changed, and 
 Each --run-output folder is named by its corpus key and holds one report folder with _lava_artifacts.db
 and _lava_data.lava, the layout notes-audit/run_corpus.sh writes. Prints ids, keys, headers and counts only.
 """
+try:
+    import fcntl
+except ImportError:  # Windows: no advisory lock; scoring one run at a time is up to the person.
+    fcntl = None
 import argparse
 import ast
 import collections
@@ -328,7 +332,7 @@ def commit_of(src, given):
     """The commit the code tree is at. A git checkout answers for itself and must agree with --commit."""
     done = subprocess.run(['git', '-C', str(src), 'rev-parse', '--show-toplevel', 'HEAD'], capture_output=True,
                           text=True, stdin=subprocess.DEVNULL)
-    lines = done.stdout.split()
+    lines = done.stdout.splitlines()
     if done.returncode == 0 and len(lines) == 2 and Path(lines[0]).resolve() == Path(src).resolve():
         head = lines[1]
         if given and not head.startswith(given):
@@ -412,7 +416,11 @@ def norm(text):
 
 
 def findings_of(text):
-    """The auditor's findings: the last JSON object in the reply, or failing that the rows of its markdown table."""
+    """The auditor's findings: the last JSON object in the reply that carries a findings list.
+
+    Raises ValueError when there is none, so an empty or cut-off reply is never scored as a miss. A reply
+    that is only a markdown table is refused too: its cells cannot be told apart reliably.
+    """
     decoder = json.JSONDecoder()
     last = None
     for start in [m.start() for m in re.finditer(r'\{', text)]:
@@ -422,16 +430,11 @@ def findings_of(text):
             continue
         if isinstance(value, dict) and isinstance(value.get('findings'), list):
             last = value
-    if last is not None:
-        return last['findings']
-    rows = []
-    for line in text.splitlines():
-        cells = [c.strip() for c in line.strip().strip('|').split('|')] if line.strip().startswith('|') else []
-        verdict = next((c.split()[0].lower() for c in cells if re.match(r'(?i)^(keep|soften|remove)\b', c)), None)
-        if verdict:
-            claim = max((c for c in cells if not re.match(r'(?i)^(keep|soften|remove)\b', c)), key=len, default='')
-            rows.append({'kind': 'statement', 'quote': claim.strip('"'), 'verdict': verdict, 'tier': ''})
-    return rows
+    if last is None:
+        raise ValueError('the reply holds no JSON object with a findings list')
+    if not all(isinstance(f, dict) for f in last['findings']):
+        raise ValueError('a finding in the reply is not a JSON object')
+    return last['findings']
 
 
 CLAIMS = {
@@ -475,6 +478,9 @@ def match(findings, sentence, shape, artifact=None):
     """
     planted, claim = norm(sentence), norm(claim_of(shape, sentence))
     subject = norm(subject_of(shape, sentence))
+    # The subject and the claim as they sit together in the sentence: "status created timestamp column is
+    # filled on every row" or "key a this artifact reports 9 rows". A quote must hold this phrase whole.
+    phrase = planted[planted.index(subject):planted.index(claim) + len(claim)]
     best, hit = 'missed', None
     for f in findings:
         if f.get('kind', 'statement') != 'statement' or str(f.get('verdict', '')).lower() not in ('soften', 'remove'):
@@ -484,27 +490,61 @@ def match(findings, sentence, shape, artifact=None):
             continue
         # The same short claim can sit in another sentence about another column, so a catch must also name
         # the planted sentence's own subject and, where the finding says, the planted artifact and field.
-        named = str(f.get('artifact') or '')
-        field = str(f.get('field') or '')
+        named = [part.strip() for part in re.split(r'[,;]', str(f.get('artifact') or '')) if part.strip()]
+        field = str(f.get('field') or '').strip().lower()
         right_place = ((not named or artifact is None or artifact in named)
-                       and (not field or 'notes' in field.lower()))
-        if subject in quote and right_place and len(quote) <= 2 * len(planted) + 20:
+                       and (not field or field == 'notes'))
+        if phrase in quote and right_place and len(quote) <= 2 * len(planted) + 20:
             return 'caught', f
         best, hit = 'unclear', f
     return best, hit
 
 
-def tool_inputs(transcript):
-    """Every tool call's input in a transcript. Refuses one with a line it cannot parse or with no tool calls,
-    since a leak check over records it could not read would report clean."""
+def strings_in(node):
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def records_of(transcript):
+    """Every record of a transcript. A line that is not JSON makes the whole transcript unreadable."""
+    try:
+        text = Path(transcript).read_text(errors='replace')
+    except OSError:
+        raise ValueError('the transcript could not be read') from None
+    records = []
+    for line in text.splitlines():
+        if line.strip():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                raise ValueError('a transcript line is not JSON') from None
+    return records
+
+
+def belongs(records, record, findings):
+    """The transcript is this run's: a tool call reads this run's copy, and the scored reply's quotes are in it."""
+    calls = tool_inputs(records)
+    if not any(record['copy'] in text.replace('\\\\', '\\').replace('\\/', '/') for text in calls):
+        raise ValueError("the transcript never reads this run's copy")
+    texts = list(strings_in(records))
+    for f in findings:
+        quote = str(f.get('quote') or '')
+        if quote and not any(quote in text for text in texts):
+            raise ValueError('the scored reply is not in the transcript')
+
+
+def tool_inputs(records):
+    """Every tool call's input in a transcript's records. Refuses one with no tool calls, since a leak check
+    over nothing would report clean."""
     inputs = []
-    for number, line in enumerate(Path(transcript).read_text(errors='replace').splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            raise ValueError(f'transcript line {number} is not JSON') from None
+    for record in records:
         stack = [record]
         while stack:
             node = stack.pop()
@@ -515,11 +555,11 @@ def tool_inputs(transcript):
             elif isinstance(node, list):
                 stack.extend(node)
     if not inputs:
-        raise ValueError('transcript holds no tool calls')
+        raise ValueError('the transcript holds no tool calls')
     return inputs
 
 
-def leaks(transcript, record, settings, earlier=None):
+def leaks(records, record, settings, earlier=None):
     """Reads that would let the auditor see the answer: the keys folder, the ledger, this tool, the originals.
 
     `earlier` is the notes audit's own leak pattern (kit_config.notes_audit_leak): it catches reads of an
@@ -529,7 +569,7 @@ def leaks(transcript, record, settings, earlier=None):
     needles = [str(settings['keys_dir']), settings['ledger'].name, 'auditor-spot-check', 'spotcheck',
                'leapp-quality-kit', record['id']] + record.get('originals', [])
     hits = collections.Counter()
-    for text in tool_inputs(transcript):
+    for text in tool_inputs(records):
         unescaped = text.replace('\\\\', '\\').replace('\\/', '/')
         for needle in needles:
             # The copy's own folder name carries the id; reading the copy is the job, not a leak.
@@ -550,9 +590,10 @@ def score(a, settings, earlier=None):
     key_file = settings['keys_dir'] / f'{a.id}.json'
     record = json.loads(key_file.read_text(encoding='utf-8'))
     ledger = settings['ledger']
-    if ledger.exists() and any(json.loads(l).get('id') == a.id for l in ledger.read_text().splitlines() if l.strip()):
-        sys.exit(f'FAIL {a.id} is already in the ledger')
-    findings = findings_of(Path(a.output).read_text(errors='replace'))
+    try:
+        findings = findings_of(Path(a.output).read_text(errors='replace'))
+    except (OSError, ValueError) as error:
+        sys.exit(f'FAIL {a.id} not scored: {error if isinstance(error, ValueError) else "the reply could not be read"}')
     outcome, hit = match(findings, record['sentence'], record['shape'], record['artifact'])
     if record['control']:
         # Nothing was planted, so any match means the scorer reads something else as the plant.
@@ -560,9 +601,12 @@ def score(a, settings, earlier=None):
     leak, check = None, 'not run'
     if a.transcript:
         try:
-            leak = leaks(a.transcript, record, settings, earlier)
+            records = records_of(a.transcript)
+            belongs(records, record, findings)
+            leak = leaks(records, record, settings, earlier)
             check = 'hit' if leak else 'clean'
-        except (OSError, ValueError) as error:
+        except ValueError as error:
+            # Fixed messages only: an OS error would print the transcript's local path.
             check, leak = 'could not check', str(error)
     line = {'id': record['id'], 'scored': date.today().isoformat(), 'core': record['core'], 'module': record['module'],
             'commit': record['commit'], 'artifact': record['artifact'], 'shape': record['shape'],
@@ -571,7 +615,14 @@ def score(a, settings, earlier=None):
             'omissions': sum(1 for f in findings if f.get('kind') == 'omission'),
             'leak_check': check}
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    with ledger.open('a', encoding='utf-8') as out:
+    with ledger.open('a+', encoding='utf-8') as out:
+        # One scorer at a time: the duplicate check and the append happen under the same lock.
+        if fcntl:
+            fcntl.flock(out, fcntl.LOCK_EX)
+        out.seek(0)
+        if any(json.loads(l).get('id') == a.id for l in out.read().splitlines() if l.strip()):
+            sys.exit(f'FAIL {a.id} is already in the ledger')
+        out.seek(0, 2)
         out.write(json.dumps(line) + '\n')
     print(record['id'], record['module'], record['shape'], 'control' if record['control'] else 'planted', '->', outcome,
           '| statement findings', line['findings'], '| leak check', line['leak_check'], leak or '')
