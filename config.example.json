@@ -32,6 +32,7 @@
     "ledger": "{work_dir}/auditor-spot-check/ledger.jsonl"
   },
   "recheck_weekly_cores": ["ALEAPP"],
+  "private_queue": "~/leapp-quality-work/audit-queue-private.md",
   "unread_columns": {"out_dir": "{work_dir}/unread-columns"},
   "deploy": {
     "root": "~/Tools/leapp-quality-kit",

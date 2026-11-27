@@ -4,7 +4,8 @@ Copies of the tools I run around LEAPP artifact work that live outside the LEAPP
 my account, repositories and corpus paths moved into one config file.
 The checks inside each core (`admin/scripts/check_*.py`, `validate_sample_data.py`, the test-case
 harness) are in the cores. This repository holds the rest: the merge gate, the Mac PR reviewer,
-the notes audit, the number re-check, the unread-column list, the auditor agent and its spot-check.
+the notes audit, the number re-check, the unread-column list, the schema watch, the auditor agent and
+its spot-check.
 
 They are written for the LEAPPs (iLEAPP, ALEAPP, RLEAPP, VLEAPP, DLEAPP). Expect to read the code and
 adapt it to your own tool.
@@ -16,6 +17,7 @@ adapt it to your own tool.
 | `notes-audit/` | Audits the examiner-facing text of merged modules: one auditor per module, then a blind checker that sees the flagged statements mixed with unflagged controls. | Claude Code (Workflow tool), a corpus, a core checkout |
 | `number-recheck/` | Re-runs every `sample_data` row count a core declares against `origin/main` and sorts each corpus key into matched, drifted or could not check. | A corpus with `samples.json` registries, a core checkout |
 | `unread-columns/` | During an artifact's corpus run, lists for each SQLite table it reads the columns its SQL never reads, with counts only, so the session can skip or build each one. A warning list; the gate does not read it. | A corpus with `samples.json` registries, a core checkout |
+| `schema-watch/` | Once a day, finds new corpus keys and compares the table, column and preference names of each app store in them with the same store in the keys each module cites. Files one `audit-queue` issue per changed module; findings on keys without public metadata go to a private queue file. Never blocks a merge. | A corpus with `samples.json` registries, core checkouts, `gh` |
 | `auditor-spot-check/` | Checks the auditor: about one run in ten gets a second auditor run on a copy of the module with one false sentence planted in its notes, and a ledger records caught or missed. Never touches the real PR. | Claude Code, a core's run output |
 | `agents/` | The `leapp-notes-auditor` agent: an independent read of an artifact's description, notes and headers against the code and the run output. | Claude Code |
 
@@ -25,7 +27,7 @@ adapt it to your own tool.
    `LEAPP_QUALITY_CONFIG` at another path) and fill it in: your GitHub login and numeric user id,
    which repositories each reviewer covers, any held PRs, where your core checkouts are, where the
    corpus registries are, and a work folder for output. The optional keys (`attestations_dir`,
-   `notes_audit`, `recheck_weekly_cores`, `unread_columns`, `app_review_setup`) keep local state out of the checkout
+   `notes_audit`, `recheck_weekly_cores`, `unread_columns`, `private_queue`, `app_review_setup`) keep local state out of the checkout
    and are described in each folder's README.
 2. For the auditor, copy `agents/leapp-notes-auditor.md` into `~/.claude/agents/`.
 3. For the merge guard, add it as a `PreToolUse` hook in your Claude Code settings:
@@ -45,7 +47,7 @@ any of the five repo lists (an empty list is fine), or if `kit_config` cannot be
 merge-shaped command is denied. Ordinary commands still run.
 
 Run the tests with `python3 -m unittest discover -s <folder>` for `review-gate`, `notes-audit`,
-`number-recheck`, `mac-pr-reviewer`, `unread-columns`, `deploy` and `auditor-spot-check`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
+`number-recheck`, `mac-pr-reviewer`, `unread-columns`, `deploy`, `auditor-spot-check` and `schema-watch`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
 
 ## Keeping a deployed copy current
 
