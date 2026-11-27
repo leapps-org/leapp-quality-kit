@@ -42,6 +42,11 @@ import kit_config  # noqa: E402
 SIDECARS = ('-wal', '-shm', '-journal')
 SQLITE_MAGIC = b'SQLite format 3\x00'
 INDEX_VERSION = 1
+# SQLite's own tables and Android's locale table come and go with use or framework, not with the app.
+INTERNAL = re.compile(r'^(sqlite_|android_metadata$)', re.I)
+# A table named with a per-install hex id (ExoPlayer: "ExoPlayerCacheIndex" + hex uid) is the same table
+# on every device, so the id is replaced before comparing.
+HEX_SUFFIX = re.compile(r'(?<=[A-Za-z_])[0-9a-f]{8,16}$')
 CORES = ('ALEAPP', 'iLEAPP', 'RLEAPP', 'VLEAPP', 'DLEAPP')
 
 
@@ -130,6 +135,9 @@ def parse_module(source):
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             tokens.update(t.lower() for t in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', node.value))
+            # Whole strings too, so a preference name such as "flutter.last_location" can be found.
+            if len(node.value) <= 200:
+                tokens.add(node.value.strip().lower())
     return {'patterns': patterns, 'keys': keys, 'tokens': tokens}
 
 
@@ -340,6 +348,9 @@ def module_stores(module, index):
                 continue
             store = index['stores'].get(n)
             if store:
+                if store['kind'] == 'sqlite':
+                    store = {'kind': 'sqlite', 'tables': {HEX_SUFFIX.sub('<hex>', t): c for t, c in store['tables'].items()
+                                                        if not INTERNAL.match(t)}}
                 merge(out, store_id(p, n), store)
     return out
 
@@ -362,13 +373,35 @@ def merge(out, sid, store):
 
 # ---------------------------------------------------------------- comparison
 
+def intersect(stores):
+    """The names every one of these stores (one per cited key, same kind) has."""
+    first = stores[0]
+    if first['kind'] == 'sqlite':
+        tables = set(first['tables']).intersection(*(s['tables'] for s in stores[1:]))
+        return {'kind': 'sqlite', 'tables': {t: sorted(set(first['tables'][t]).intersection(
+            *(s['tables'][t] for s in stores[1:]))) for t in tables}}
+    return {'kind': first['kind'], 'names': sorted(set(first['names']).intersection(*(s['names'] for s in stores[1:])))}
+
+
+def named(name, tokens):
+    """True when the name, or every word of it (for a name such as "flutter.last_location"), is a
+    word in the module's string constants. A source-token match, not a trace of what the code reads."""
+    words = [w.lower() for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', name)]
+    return name.lower() in tokens or bool(words) and all(w in tokens for w in words)
+
+
 def compare(module, new_stores, baselines):
     """Differences between a new key's stores and the module's baseline.
-    baselines: {cited key: {store id: store}}. Returns a dict, empty when nothing changed."""
-    base = {}
+    baselines: {cited key: {store id: store}}. A name is "added" when no cited key's store has it
+    (union), and "gone" only when every cited key that has the store has it (intersection), so a
+    column one vendor adds is not reported as missing on every other vendor's key.
+    Returns a dict, empty when nothing changed."""
+    base, every = {}, {}
     for stores in baselines.values():
         for sid, store in stores.items():
             merge(base, sid, store)
+            if store['kind'] not in ('other', 'unreadable'):
+                every.setdefault(sid, []).append(store)
     tokens = module['tokens']
     out = {'stores': [], 'not_compared': [], 'no_baseline': []}
     for sid in sorted(new_stores):
@@ -385,26 +418,28 @@ def compare(module, new_stores, baselines):
         if old['kind'] != new['kind']:
             out['not_compared'].append({'store': sid, 'reason': f"was {old['kind']}, now {new['kind']}"})
             continue
+        same = [s for s in every.get(sid, []) if s['kind'] == new['kind']]
+        common = intersect(same) if same else old
         change = {'store': sid, 'kind': new['kind']}
         if new['kind'] == 'sqlite':
-            o, n = old['tables'], new['tables']
+            o, n, c = old['tables'], new['tables'], common['tables']
             change['tables_added'] = sorted(set(n) - set(o))
-            change['tables_gone'] = [{'name': t, 'named_in_module': t.lower() in tokens} for t in sorted(set(o) - set(n))]
+            change['tables_gone'] = [{'name': t, 'named_in_module': named(t, tokens)} for t in sorted(set(c) - set(n))]
             cols_added, cols_gone = {}, {}
             for t in sorted(set(o) & set(n)):
                 a = sorted(set(n[t]) - set(o[t]))
-                g = sorted(set(o[t]) - set(n[t]))
+                g = sorted(set(c.get(t, [])) - set(n[t]))
                 if a:
                     cols_added[t] = a
                 if g:
-                    cols_gone[t] = [{'name': c, 'named_in_module': c.lower() in tokens} for c in g]
+                    cols_gone[t] = [{'name': c, 'named_in_module': named(c, tokens)} for c in g]
             change['columns_added'], change['columns_gone'] = cols_added, cols_gone
             if not any((change['tables_added'], change['tables_gone'], cols_added, cols_gone)):
                 continue
         else:
-            o, n = set(old['names']), set(new['names'])
+            o, n, c = set(old['names']), set(new['names']), set(common['names'])
             change['names_added'] = sorted(n - o)
-            change['names_gone'] = [{'name': x, 'named_in_module': x.lower() in tokens} for x in sorted(o - n)]
+            change['names_gone'] = [{'name': x, 'named_in_module': named(x, tokens)} for x in sorted(c - n)]
             if not (change['names_added'] or change['names_gone']):
                 continue
         out['stores'].append(change)
@@ -420,19 +455,19 @@ def finding_lines(found):
         lines.append(f"- `{c['store']}`")
         if c['kind'] == 'sqlite':
             if c['tables_added']:
-                lines.append(f"  - tables not in the baseline ({len(c['tables_added'])}): {', '.join(c['tables_added'])}")
+                lines.append(f"  - tables in no cited key ({len(c['tables_added'])}): {', '.join(c['tables_added'])}")
             if c['tables_gone']:
-                lines.append(f"  - baseline tables missing ({len(c['tables_gone'])}): {gone(c['tables_gone'])}")
+                lines.append(f"  - tables every cited key has, missing here ({len(c['tables_gone'])}): {gone(c['tables_gone'])}")
             for t, cols in c['columns_added'].items():
-                lines.append(f"  - `{t}` columns not in the baseline ({len(cols)}): {', '.join(cols)}")
+                lines.append(f"  - `{t}` columns in no cited key ({len(cols)}): {', '.join(cols)}")
             for t, cols in c['columns_gone'].items():
-                lines.append(f"  - `{t}` baseline columns missing ({len(cols)}): {gone(cols)}")
+                lines.append(f"  - `{t}` columns every cited key has, missing here ({len(cols)}): {gone(cols)}")
         else:
             label = 'preference names' if c['kind'] == 'prefs' else 'plist keys'
             if c['names_added']:
-                lines.append(f"  - {label} not in the baseline ({len(c['names_added'])}): {', '.join(c['names_added'])}")
+                lines.append(f"  - {label} in no cited key ({len(c['names_added'])}): {', '.join(c['names_added'])}")
             if c['names_gone']:
-                lines.append(f"  - baseline {label} missing ({len(c['names_gone'])}): {gone(c['names_gone'])}")
+                lines.append(f"  - {label} every cited key has, missing here ({len(c['names_gone'])}): {gone(c['names_gone'])}")
     for c in found.get('no_baseline', []):
         lines.append(f"- `{c['store']}`: in this key but in none of the cited keys ({c['kind']}, {c['count']} names)")
     for c in found.get('not_compared', []):
@@ -440,9 +475,20 @@ def finding_lines(found):
     return lines
 
 
+def store_matters(c):
+    """A store difference files an issue when it has a name no cited key had, or a missing name that
+    appears in the module's source. A missing name the module never mentions is a note only."""
+    if c['kind'] == 'sqlite':
+        gone = c['tables_gone'] + [x for cols in c['columns_gone'].values() for x in cols]
+        added = c['tables_added'] or c['columns_added']
+    else:
+        gone, added = c['names_gone'], c['names_added']
+    return bool(added) or any(x['named_in_module'] for x in gone)
+
+
 def is_change(found):
-    """Only real differences file an issue. A store that could not be read is reported, not filed."""
-    return bool(found.get('stores') or found.get('no_baseline'))
+    """Only these differences file an issue. A store that could not be read is reported, not filed."""
+    return any(store_matters(c) for c in found.get('stores', [])) or bool(found.get('no_baseline'))
 
 
 # ---------------------------------------------------------------- one core

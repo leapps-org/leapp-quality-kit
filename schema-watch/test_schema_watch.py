@@ -59,6 +59,15 @@ class Matching(unittest.TestCase):
                          sw.store_id(p, 'data/data/com.example/databases/app.db'))
 
 
+class Normalise(unittest.TestCase):
+    def test_internal_tables_dropped_and_hex_ids_folded(self):
+        m = {'patterns': ['*/x.db'], 'keys': [], 'tokens': set()}
+        idx = {'matches': {'*/x.db': ['a/x.db']}, 'stores': {'a/x.db': {'kind': 'sqlite', 'tables': {
+            'sqlite_sequence': ['name'], 'android_metadata': ['locale'], 'ExoPlayerCacheIndexe00349fe3ed572f': ['id'],
+            'notes': ['t']}}}}
+        self.assertEqual(sorted(sw.module_stores(m, idx)['x.db']['tables']), ['ExoPlayerCacheIndex<hex>', 'notes'])
+
+
 class Compare(unittest.TestCase):
     def setUp(self):
         self.module = sw.parse_module(MODULE)
@@ -78,6 +87,28 @@ class Compare(unittest.TestCase):
         self.assertEqual(c['columns_added'], {'notes': ['body']})
         self.assertEqual(c['columns_gone'], {'notes': [{'name': 'created', 'named_in_module': True},
                                                        {'name': 'junk', 'named_in_module': False}]})
+
+    def test_a_column_only_one_vendor_has_is_not_missing(self):
+        sid = 'com.example/databases/app.db'
+        oem = {sid: {'kind': 'sqlite', 'tables': {'notes': ['title', 'created', 'oem_extra'], 'oem_t': ['x']}}}
+        aosp = {sid: {'kind': 'sqlite', 'tables': {'notes': ['title', 'created']}}}
+        new = {sid: {'kind': 'sqlite', 'tables': {'notes': ['title']}}}
+        found = sw.compare(self.module, new, {'oem_key': oem, 'aosp_key': aosp})
+        c = found['stores'][0]
+        self.assertEqual(c['tables_gone'], [])
+        self.assertEqual(c['columns_gone'], {'notes': [{'name': 'created', 'named_in_module': True}]})
+
+    def test_a_missing_name_the_module_never_mentions_is_a_note_only(self):
+        sid = 'com.example/databases/app.db'
+        old = {sid: {'kind': 'sqlite', 'tables': {'notes': ['title', 'created'], 'vendor_t': ['x']}}}
+        new = {sid: {'kind': 'sqlite', 'tables': {'notes': ['title', 'created']}}}
+        found = sw.compare(self.module, new, {'old_key': old})
+        self.assertEqual(found['stores'][0]['tables_gone'][0]['name'], 'vendor_t')
+        self.assertFalse(sw.is_change(found))
+
+    def test_dotted_preference_name_counts_as_named(self):
+        self.assertTrue(sw.named('flutter.last_location', {'flutter', 'last_location'}))
+        self.assertFalse(sw.named('flutter.is_traffic_on', {'flutter', 'last_location'}))
 
     def test_unreadable_store_is_not_compared_and_files_nothing(self):
         old = {'com.example/databases/app.db': {'kind': 'sqlite', 'tables': {'notes': ['title']}}}

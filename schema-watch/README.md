@@ -35,12 +35,23 @@ For each module on the core's `origin/main` (read with `git archive`, so no chec
    (for example `pl.solidexplorer2/databases/explorer.db`), so the same store under another root
    or user lines up.
 
-The new key's stores are then compared with the baseline: tables and columns added, tables and
-columns gone, preference names added and gone. A name that is gone and also appears as a word in
-a string in the module's source is marked "named in the module". That is a source-token match, not
+The new key's stores are then compared with the baseline. A table, column or preference name is
+"in no cited key" when none of the cited keys' copies of that store has it. A name is "missing here"
+only when every cited key that has the store has it, so a column one phone maker adds is not
+reported as missing on every other maker's key. A missing name that also appears as a word in a
+string in the module's source is marked "named in the module". That is a source-token match, not
 a trace of what the code reads. A store the module matches in the new key but in none of its cited
 keys is listed as having no baseline. A store that could not be read (an encrypted database, for
 example) is listed as not compared. It is never reported as unchanged and files nothing.
+
+Before comparing, SQLite's own tables (`sqlite_sequence`, `sqlite_stat1` and the rest) and
+`android_metadata` are dropped, because they appear with use or with the framework, not with the
+app. A table name that ends in an 8 to 16 character hex id after a letter has the id replaced, so
+ExoPlayer's `ExoPlayerCacheIndex<uid>` tables line up across devices.
+
+A module counts as changed, and gets an issue, when a store has a name in no cited key, a missing
+name that is named in the module, or no baseline. Missing names the module never mentions are
+listed in the report as notes and file nothing.
 
 A module with no `sample_data` keys has no baseline and is only counted. A module that cites the
 new key was built on it and is skipped.
@@ -76,9 +87,23 @@ at 06:30; fill in the path and load it with `launchctl bootstrap`.
 
 ## Proof
 
-See the pull request that added this folder for the runs on real keys. The tests build small tar
-and zip keys from real SQLite files (one table exists only in the `-wal`), and check that the
-difference is found, that an unchanged store files nothing, and that a private key never reaches
-GitHub.
+Run on ALEAPP main on 26 November 2026, with the 95 keys ALEAPP cites indexed from the corpus:
+
+- `emu_a15_oss_v12` against every module: 3 changed, 151 unchanged, 3 with no cited keys. One of
+  the 3 is HERE WeGo: its `FlutterSharedPreferences.xml` lacks 6 preference names that its cited key
+  `emu_a15_oss_v14` has, 3 of them named in the module. v12 was captured before the app was used.
+- Solid Explorer on `emu_a15_oss_v17` against its cited `emu_a15_oss_v14`: unchanged, nothing filed.
+  `explorer.db` has the same tables and columns in both. In v12 it is not there at all.
+- `emu_a15_kdl_v1` (public metadata allowed) with `--file-issues --dry-run`: 59 unchanged, nothing
+  filed. Before missing-but-unmentioned names became notes, the same run would have filed 2 issues
+  in the core repository, which exercised the public route. The `emu_a15_oss` keys do not set
+  `allow_public_metadata`, so their findings went to the private queue.
+
+Indexing the 95 keys the first time took about 95 minutes on a busy machine. Later runs read the
+cache; one took 5 seconds.
+
+The tests build small tar and zip keys from real SQLite files (one table exists only in the `-wal`),
+and check that the difference is found, that an unchanged store files nothing, and that a private
+key never reaches GitHub.
 
 Run them with `python3 -m unittest discover -s schema-watch`.
