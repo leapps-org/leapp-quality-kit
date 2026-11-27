@@ -26,6 +26,7 @@
     "ledger": "~/.config/leapp-quality-kit/audited.json"
   },
   "recheck_weekly_cores": ["ALEAPP"],
+  "unread_columns": {"out_dir": "{work_dir}/unread-columns"},
   "deploy": {
     "root": "~/Tools/leapp-quality-kit",
     "releases": "~/Tools/leapp-quality-kit-releases",
