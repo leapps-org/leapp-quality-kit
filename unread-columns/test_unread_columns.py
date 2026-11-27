@@ -60,7 +60,7 @@ ARTIFACT = textwrap.dedent('''
 
     def demo_wild(path):
         with _open(path) as db:
-            return db.execute("SELECT id FROM msgs").fetchall()
+            return db.execute("SELECT ROWID, id FROM msgs").fetchall()
 ''')
 
 HELPER = textwrap.dedent('''
@@ -204,6 +204,8 @@ class SyntheticRun(unittest.TestCase):
         stores = self.result['artifacts']['demo_wild']['stores']
         self.assertEqual(list(stores), ['store 1'])
         self.assertEqual(sorted(stores['store 1']['msgs']['unread']), ['extra'])
+        # ROWID of a table with no INTEGER PRIMARY KEY is not a column and is not counted as one.
+        self.assertEqual(stores['store 1']['msgs']['read'], 1)
 
     def test_no_evidence_value_in_the_output(self):
         text = json.dumps(self.result, default=sorted) + '\n'.join(

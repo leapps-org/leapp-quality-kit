@@ -237,7 +237,9 @@ def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
                     columns = table_columns(db, table)
                     # SQLite reports a touch of the table with no named column (count(*), SELECT 1)
                     # as an empty name. The table counts as read; no column does.
-                    read = read - {''}
+                    # A rowid read on a table with no INTEGER PRIMARY KEY is reported as ROWID (or
+                    # _rowid_, oid), which is not a column, so only real columns count.
+                    read = read & set(columns)
                     if not columns:
                         errors.append(f'{func}: {label} table {table}: no columns in the copy')
                         continue
