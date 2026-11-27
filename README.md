@@ -4,7 +4,7 @@ Copies of the tools I run around LEAPP artifact work that live outside the LEAPP
 my account, repositories and corpus paths moved into one config file.
 The checks inside each core (`admin/scripts/check_*.py`, `validate_sample_data.py`, the test-case
 harness) are in the cores. This repository holds the rest: the merge gate, the Mac PR reviewer,
-the notes audit, the number re-check, the unread-column list and the auditor agent.
+the notes audit, the number re-check, the unread-column list, the auditor agent and its spot-check.
 
 They are written for the LEAPPs (iLEAPP, ALEAPP, RLEAPP, VLEAPP, DLEAPP). Expect to read the code and
 adapt it to your own tool.
@@ -16,6 +16,7 @@ adapt it to your own tool.
 | `notes-audit/` | Audits the examiner-facing text of merged modules: one auditor per module, then a blind checker that sees the flagged statements mixed with unflagged controls. | Claude Code (Workflow tool), a corpus, a core checkout |
 | `number-recheck/` | Re-runs every `sample_data` row count a core declares against `origin/main` and sorts each corpus key into matched, drifted or could not check. | A corpus with `samples.json` registries, a core checkout |
 | `unread-columns/` | During an artifact's corpus run, lists for each SQLite table it reads the columns its SQL never reads, with counts only, so the session can skip or build each one. A warning list; the gate does not read it. | A corpus with `samples.json` registries, a core checkout |
+| `auditor-spot-check/` | Checks the auditor: about one run in ten gets a second auditor run on a copy of the module with one false sentence planted in its notes, and a ledger records caught or missed. Never touches the real PR. | Claude Code, a core's run output |
 | `agents/` | The `leapp-notes-auditor` agent: an independent read of an artifact's description, notes and headers against the code and the run output. | Claude Code |
 
 ## Setup
@@ -44,7 +45,7 @@ any of the five repo lists (an empty list is fine), or if `kit_config` cannot be
 merge-shaped command is denied. Ordinary commands still run.
 
 Run the tests with `python3 -m unittest discover -s <folder>` for `review-gate`, `notes-audit`,
-`number-recheck`, `mac-pr-reviewer`, `unread-columns` and `deploy`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
+`number-recheck`, `mac-pr-reviewer`, `unread-columns`, `deploy` and `auditor-spot-check`. For the Mac reviewer, see `mac-pr-reviewer/README.md`.
 
 ## Keeping a deployed copy current
 

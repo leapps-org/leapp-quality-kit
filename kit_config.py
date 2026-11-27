@@ -110,3 +110,38 @@ def unread_columns(data):
     text = str(block.get('out_dir') or '{work_dir}/unread-columns')
     text = text.replace('{work_dir}', str(expand(need(data, 'work_dir'))))
     return {'out_dir': expand(text)}
+
+
+SPOT_CHECK_DEFAULTS = {
+    'every': 10,
+    'copies_dir': '{work_dir}/leapp-audit-input',
+    'keys_dir': '{work_dir}/auditor-spot-check/keys',
+    'ledger': '{work_dir}/auditor-spot-check/ledger.jsonl',
+}
+
+
+def spot_check(data):
+    """The auditor spot-check's settings from the optional "spot_check" block, with defaults under work_dir.
+
+    every: about one auditor run in this many is spot-checked. copies_dir: where the module copies the
+    auditor reads are made. keys_dir: the answer keys (which sentence was planted). ledger: one JSON line
+    per scored run. The answer keys and the ledger must stay outside the copies folder, which the auditor reads.
+    """
+    block = data.get('spot_check') or {}
+    if not isinstance(block, dict):
+        raise ConfigError(f'"spot_check" must be an object in {path_of()}')
+    work_dir = str(expand(need(data, 'work_dir')))
+    paths = {}
+    for name in ('copies_dir', 'keys_dir', 'ledger'):
+        text = str(block.get(name) or SPOT_CHECK_DEFAULTS[name]).replace('{work_dir}', work_dir)
+        paths[name] = expand(text)
+    every = block.get('every', SPOT_CHECK_DEFAULTS['every'])
+    if isinstance(every, bool) or not isinstance(every, int) or every < 1:
+        raise ConfigError(f'"spot_check.every" must be a whole number of 1 or more in {path_of()}')
+    copies = paths['copies_dir'].resolve()
+    for name in ('keys_dir', 'ledger'):
+        where = paths[name].resolve()
+        if where == copies or copies in where.parents or where in copies.parents:
+            raise ConfigError(f'"spot_check.{name}" must sit outside "spot_check.copies_dir" in {path_of()}, '
+                              'because the auditor reads the copies folder')
+    return {'every': every, **paths}
