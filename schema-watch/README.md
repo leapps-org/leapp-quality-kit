@@ -97,17 +97,16 @@ at 06:30; fill in the path and load it with `launchctl bootstrap`.
 
 ## Proof
 
-Run on ALEAPP main on 26 November 2026, with the 95 keys ALEAPP cites indexed from the corpus:
+Run on ALEAPP main on 26 November 2026, with the 95 keys ALEAPP cites indexed from the corpus.
+Results on keys without public metadata are described here by counts only.
 
-- `emu_a15_oss_v12` against every module: 3 changed, 151 unchanged, 3 with no cited keys. One of
-  the 3 is HERE WeGo: its `FlutterSharedPreferences.xml` lacks 6 preference names that its cited key
-  `emu_a15_oss_v14` has, 3 of them named in the module. v12 was captured before the app was used.
-- Solid Explorer on `emu_a15_oss_v17` against its cited `emu_a15_oss_v14`: unchanged, nothing filed.
-  `explorer.db` has the same tables and columns in both. In v12 it is not there at all.
+- A private emulator key compared with every module: 3 changed, 151 unchanged, 3 with no cited keys.
+  One of the 3 was an app whose preference file lacked 6 names its cited key (a later capture of the
+  same device) has, 3 of them named in the module. The new key was captured before the app was used.
+- An app compared on a later capture of that device against its one cited key: unchanged, nothing
+  filed. Its database has the same tables and columns in both.
 - `emu_a15_kdl_v1` (public metadata allowed) with `--file-issues --dry-run`: 59 unchanged, nothing
-  filed. Before missing-but-unmentioned names became notes, the same run would have filed 2 issues
-  in the core repository, which exercised the public route. The `emu_a15_oss` keys do not set
-  `allow_public_metadata`, so their findings went to the private queue.
+  filed. Live issue creation was not run; the public route is covered by the tests, which mock `gh`.
 
 Indexing the 95 keys the first time took about 95 minutes on a busy machine. Later runs read the
 cache; one took 5 seconds.

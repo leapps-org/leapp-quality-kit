@@ -239,7 +239,8 @@ class Review(unittest.TestCase):
 
     def test_origin_must_match_the_filing_repo(self):
         for url, ok in (('https://github.com/me/ALEAPP.git', True), ('git@github.com:me/ALEAPP.git', True),
-                        ('https://github.com/fork/ALEAPP', False), ('https://github.com/me/ALEAPP-old', False)):
+                        ('https://github.com/fork/ALEAPP', False), ('https://github.com/me/ALEAPP-old', False),
+                        ('me/ALEAPP', False), ('../me/ALEAPP.git', False), ('https://gitlab.com/me/ALEAPP', False)):
             with patch.object(sw, 'run', return_value=Done(url.encode())):
                 self.assertEqual(sw.origin_is('/x', 'me', 'ALEAPP'), ok, url)
 
@@ -265,6 +266,33 @@ class Wrapper(unittest.TestCase):
             _f, _p, problems = sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, q, False, log=lambda *_: None)
             self.assertEqual(problems, ['a.py'])
             self.assertEqual(q.read_text(), '')
+
+
+class Queue(unittest.TestCase):
+    def test_a_finding_already_in_the_private_queue_is_not_appended_again(self):
+        reg = {'new_key': {'public': False, 'sha256': 'd' * 64}}
+        with tempfile.TemporaryDirectory() as tmp:
+            q = pathlib.Path(tmp) / 'q.md'
+            for _ in range(2):
+                sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, q, False, log=lambda *_: None)
+            self.assertEqual(q.read_text().count(sw.MARKER.format(module='a.py', key='new_key@' + 'd' * 12)), 1)
+
+
+class Recapture(unittest.TestCase):
+    def test_a_recaptured_cited_key_is_compared_with_the_other_cited_keys(self):
+        module = {'patterns': ['*/x.db'], 'keys': ['k1', 'k2'], 'tokens': set()}
+        idx = {k: {'version': sw.INDEX_VERSION, 'sha256': k, 'names': [], 'stores': {'a/x.db': {
+            'kind': 'sqlite', 'tables': {'t': ['c'] + (['new'] if k == 'k1' else [])}}}, 'matches': {'*/x.db': ['a/x.db']}}
+            for k in ('k1', 'k2')}
+        reg = {'k1': {'file': 'f', 'sha256': 'k1'}, 'k2': {'file': 'f', 'sha256': 'k2'}}
+        with patch.object(sw, 'core_modules', return_value=('abc', {'m.py': module})), \
+             patch.object(sw, 'index_key', side_effect=lambda k, *a: idx[k]):
+            _c, plain, _f = sw.check_core('ALEAPP', '/x', ['k1'], reg, '/c', '/t', 1, log=lambda *_: None)
+            _c, again, _f = sw.check_core('ALEAPP', '/x', ['k1'], reg, '/c', '/t', 1, log=lambda *_: None,
+                                          recaptured={'k1'})
+        self.assertEqual(plain, [])
+        self.assertEqual(again[0]['status'], 'changed')
+        self.assertEqual(again[0]['baseline_keys'], ['k2'])
 
 
 class State(unittest.TestCase):

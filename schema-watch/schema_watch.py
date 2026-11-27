@@ -506,7 +506,7 @@ def is_change(found):
 
 # ---------------------------------------------------------------- one core
 
-def check_core(core, repo, keys, reg, cache_dir, tmp_root, jobs, log=print):
+def check_core(core, repo, keys, reg, cache_dir, tmp_root, jobs, log=print, recaptured=()):
     """Compare each new key with every module of one core. Returns (commit, results, failed keys)."""
     commit, modules = core_modules(repo)
     patterns = sorted({p for m in modules.values() for p in m['patterns']})
@@ -551,8 +551,18 @@ def check_core(core, repo, keys, reg, cache_dir, tmp_root, jobs, log=print):
             stores = module_stores(m, new_index[key])
             if not stores:
                 continue
-            if key in m['keys']:
-                continue  # the module was built on this key
+            cites = list(m['keys'])
+            if key in cites:
+                if key not in recaptured:
+                    continue  # the module was built on this capture
+                # A re-capture of a cited key: the module was built on the old capture, which is gone,
+                # so compare with the other cited keys.
+                cites.remove(key)
+                if not cites:
+                    results.append({'key': key, 'module': name, 'status': 're-captured, no other cited key',
+                                    'found': {}, 'baseline_keys': []})
+                    continue
+            m = dict(m, keys=cites)
             usable = {k: module_stores(m, base_index[k]) for k in m['keys'] if k in base_index}
             if not m['keys']:
                 results.append({'key': key, 'module': name, 'status': 'no cited keys', 'found': {}})
@@ -598,7 +608,7 @@ def write_report(out, runs, failed, skipped):
                 lines += [f"### {r['module']} on {r['key']} (unchanged, notes)", ''] + extra + ['']
         for r in by.get('not compared', []):
             lines += [f"### {r['module']} on {r['key']} (not compared)", ''] + finding_lines(r['found']) + ['']
-        for status in ('no cited keys', 'baseline unreadable', 'baseline incomplete'):
+        for status in ('no cited keys', 'baseline unreadable', 'baseline incomplete', 're-captured, no other cited key'):
             if by.get(status):
                 lines += [f'### {status}', ''] + [f"- {r['module']} on {r['key']}" for r in by[status]] + ['']
     if failed:
@@ -686,6 +696,12 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
                         log(f'  {module}: {text[:200]}')
                         (filed if made.returncode == 0 else problems).append(text[:200] if made.returncode == 0 else module)
         if hidden:
+            try:
+                queued = Path(private_queue).read_text(encoding='utf-8')
+            except FileNotFoundError:
+                queued = ''
+            hidden = [r for r in hidden if MARKER.format(module=module, key=capture(r['key'], reg)) not in queued]
+        if hidden:
             entry = [f"## {datetime.date.today().isoformat()} {core} {module} (schema watch)", '',
                      issue_body(core, commit, module, hidden, reg, public_only=False), '']
             if dry_run:
@@ -741,7 +757,10 @@ def origin_is(repo, owner, name):
     """True when the checkout's origin is github.com/<owner>/<name> (https or ssh, with or without .git)."""
     url = run(['git', '-C', str(repo), 'remote', 'get-url', 'origin']).stdout.decode().strip()
     want = f'{owner}/{name}'.lower()
-    path = re.sub(r'\.git$', '', re.sub(r'^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)', '', url.lower()))
+    prefix = re.match(r'^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)', url.lower())
+    if not prefix:
+        return False  # a local path or another host is never taken for the GitHub repository
+    path = re.sub(r'\.git$', '', url.lower()[prefix.end():])
     return path.rstrip('/') == want
 
 
@@ -774,6 +793,11 @@ def main(argv=None):
     reg, absent = registered_keys(roots)
     for where in absent:
         print(f'COULD NOT CHECK: registry {where} is named in the corpus roots catalog but is not there', file=sys.stderr)
+    # The index, the state and the reports name private keys and stores, so the folders are owner-only,
+    # set before anything is written.
+    for folder in (work, work / 'index', work / 'tmp', work / 'runs'):
+        folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder, 0o700)
     state_file = work / 'state.json'
     state = load_state(state_file)
     if args.init:
@@ -807,10 +831,7 @@ def main(argv=None):
     stamp = datetime.datetime.now().strftime('%Y-%m-%d %H%M%S')
     out = Path(args.out) if args.out else work / 'runs' / stamp
     out.mkdir(parents=True, exist_ok=False)
-    # Reports, the index and the state name private keys and stores, so the folders are owner-only.
-    for folder in (work, work / 'index', work / 'tmp', work / 'runs', out):
-        folder.mkdir(parents=True, exist_ok=True)
-        os.chmod(folder, 0o700)
+    os.chmod(out, 0o700)
     print(f'{len(keys)} new key(s): ' + ', '.join(f'{c} {len(v)}' for c, v in sorted(by_core.items()))
           + (f', {len(skipped)} in no core registry' if skipped else ''), flush=True)
     runs, failed, problems = {}, {}, []
@@ -830,7 +851,10 @@ def main(argv=None):
             continue
         print(f'{core}: {len(ks)} key(s)', flush=True)
         try:
-            commit, results, bad = check_core(core, repo, ks, reg, work / 'index', work / 'tmp', args.jobs)
+            seen = (state or {}).get('seen', {})
+            again = {k for k in ks if k in seen and seen[k] != reg[k]['sha256']}
+            commit, results, bad = check_core(core, repo, ks, reg, work / 'index', work / 'tmp', args.jobs,
+                                              recaptured=again)
         except Exception as error:
             failed.update({k: f'{type(error).__name__}: {str(error)[:160]}' for k in ks})
             continue

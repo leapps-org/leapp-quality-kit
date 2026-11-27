@@ -5,6 +5,8 @@
 # is logged as "could not check" and exits 2; it is never counted as a pass.
 # Log: <work_dir>/schema-watch/daily.log (a config error that leaves no work_dir goes to stderr).
 exec </dev/null
+# The log names local paths and keys: everything this script creates is owner-only.
+umask 077
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 HERE="$(cd "$(dirname "$0")" && pwd)" || exit 1
 SETTINGS=$(/usr/bin/env python3 -I - "$HERE/.." <<'PY'
@@ -26,6 +28,8 @@ PY
 WORK=$(sed -n 1p <<<"$SETTINGS"); ROOTS=$(sed -n 2p <<<"$SETTINGS"); PY=$(sed -n 3p <<<"$SETTINGS")
 LOG="$WORK/schema-watch/daily.log"
 mkdir -p "$(dirname "$LOG")" || exit 1
+chmod 700 "$(dirname "$LOG")" || exit 1
+touch "$LOG" && chmod 600 "$LOG" || exit 1
 stamp() { date '+%Y-%m-%d %H:%M:%S'; }
 echo "$(stamp) daily run start" >> "$LOG"
 if [ ! -f "$ROOTS" ]; then
