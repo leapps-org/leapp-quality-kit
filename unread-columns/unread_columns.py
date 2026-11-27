@@ -237,7 +237,9 @@ def analyze(trace, run_dir, artifacts, inputs=(), scratch=None):
                     columns = table_columns(db, table)
                     # SQLite reports a touch of the table with no named column (count(*), SELECT 1)
                     # as an empty name. The table counts as read; no column does.
-                    read = read - {''}
+                    # A rowid read on a table with no INTEGER PRIMARY KEY is reported as ROWID (or
+                    # _rowid_, oid), which is not a column, so only real columns count.
+                    read = read & set(columns)
                     if not columns:
                         errors.append(f'{func}: {label} table {table}: no columns in the copy')
                         continue
@@ -333,11 +335,15 @@ def by_no_artifact(info_by_artifact):
     for info in info_by_artifact.values():
         for label, store in info['stores'].items():
             for table, t in store.items():
-                seen = tables.setdefault((label, table), {'columns': t['columns'], 'copies': t['copies'],
-                                                          'readers': 0, 'unread': None})
+                seen = tables.setdefault((label, table), {'columns': 0, 'copies': 0, 'readers': 0, 'unread': {}})
                 seen['readers'] += 1
-                none_read = {c: v for c, v in t['unread'].items() if not v.get('read_by')}
-                seen['unread'] = none_read if seen['unread'] is None else seen['unread']
+                seen['columns'] = max(seen['columns'], t['columns'])
+                seen['copies'] = max(seen['copies'], t['copies'])
+                # Every artifact's list is merged: two artifacts can have read different files
+                # under one store name, and a column only one of those files has must stay.
+                for column, value in t['unread'].items():
+                    if not value.get('read_by'):
+                        seen['unread'].setdefault(column, value)
     return dict(sorted(tables.items()))
 
 

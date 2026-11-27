@@ -60,7 +60,7 @@ ARTIFACT = textwrap.dedent('''
 
     def demo_wild(path):
         with _open(path) as db:
-            return db.execute("SELECT id FROM msgs").fetchall()
+            return db.execute("SELECT ROWID, id FROM msgs").fetchall()
 ''')
 
 HELPER = textwrap.dedent('''
@@ -204,6 +204,8 @@ class SyntheticRun(unittest.TestCase):
         stores = self.result['artifacts']['demo_wild']['stores']
         self.assertEqual(list(stores), ['store 1'])
         self.assertEqual(sorted(stores['store 1']['msgs']['unread']), ['extra'])
+        # ROWID of a table with no INTEGER PRIMARY KEY is not a column and is not counted as one.
+        self.assertEqual(stores['store 1']['msgs']['read'], 1)
 
     def test_no_evidence_value_in_the_output(self):
         text = json.dumps(self.result, default=sorted) + '\n'.join(
@@ -257,6 +259,23 @@ class TracerCases(unittest.TestCase):
         conn = trace_sqlite._STATE['connections'][conn_count]
         return {column for reads in conn['reads'].values() for _s, _t, column in reads}
 
+    def test_a_refused_statement_counts_no_column(self):
+        # SQLite authorizes a and b before it fails on the missing column. Those reads must not count.
+        conn_count = len(trace_sqlite._STATE['connections'])
+        db = trace_sqlite.traced_connect(':memory:')
+        self.assertIsInstance(db, sqlite3.Connection)
+        db.execute('CREATE TABLE t (a, b, c)')
+        with self.assertRaises(sqlite3.OperationalError):
+            db.execute('SELECT a, b, nope FROM t')
+        cursor = db.cursor()
+        with self.assertRaises(sqlite3.OperationalError):
+            cursor.execute('SELECT c, nope FROM t')
+        db.execute('SELECT a FROM t').fetchall()
+        db.close()
+        conn = trace_sqlite._STATE['connections'][conn_count]
+        self.assertEqual({column for reads in conn['reads'].values() for _s, _t, column in reads}, {'a'})
+        self.assertEqual(conn['dropped'], 2)
+
     def test_a_row_count_reads_no_column(self):
         self.assertEqual(self.reads(['SELECT count(*) FROM t'], 'CREATE TABLE t (id INTEGER PRIMARY KEY, a);'), {''})
 
@@ -273,6 +292,19 @@ class TracerCases(unittest.TestCase):
             db.execute('SELECT a FROM t').fetchall()
         db.close()
         self.assertEqual(seen.count(sqlite3.SQLITE_READ), 2)
+
+
+class NoArtifactList(unittest.TestCase):
+    def test_lists_from_every_artifact_are_merged(self):
+        counts = {'rows': 2, 'not_null': 2, 'distinct': 2, 'same_as': [], 'kinds': ['varies'], 'read_by': []}
+        first = {'stores': {'s.db': {'t': {'columns': 3, 'read': 2, 'copies': 1, 'whole_row_read': False,
+                                           'unread': {'x': dict(counts)}}}}}
+        # The second artifact read another file under the same name, which also has column y.
+        second = {'stores': {'s.db': {'t': {'columns': 4, 'read': 2, 'copies': 1, 'whole_row_read': False,
+                                            'unread': {'x': dict(counts), 'y': dict(counts)}}}}}
+        tables = unread_columns.by_no_artifact({'a': first, 'b': second})
+        self.assertEqual(sorted(tables[('s.db', 't')]['unread']), ['x', 'y'])
+        self.assertEqual(tables[('s.db', 't')]['columns'], 4)
 
 
 class Settings(unittest.TestCase):

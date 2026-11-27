@@ -24,7 +24,10 @@ The core runs once per key with a profile holding every artifact of the named mo
 imported. SQLite calls the authorizer while it prepares a statement, once for each column the
 statement reads, with the table and column it resolved. So joins, aliases, views and helper
 functions are worked out by SQLite, and no SQL text is parsed. The authorizer always allows the
-read and catches its own errors, so it cannot change what the core does. SQLite's statement cache is
+read and catches its own errors, so it cannot change what the core does. Reads count only once
+SQLite starts the statement: connections are opened through a small `sqlite3.Connection` subclass
+whose execute calls drop the reads of a statement SQLite refuses, such as a query that names a
+column the table lacks. SQLite's statement cache is
 turned off on traced connections, so a statement a second artifact reuses is still seen (on
 Python 3.11 and later; Python 3.10 reuses it anyway, so run the core with a newer Python).
 
@@ -58,6 +61,8 @@ key. A table read on a key where the artifact wrote no rows still describes the 
   listed with every column unread.
 - `SELECT *` reads every column. When one statement read every column of a table, the report says
   so, because the module may still drop columns in Python.
+- A module that opens a connection with its own `factory` is traced without that guard, so a
+  refused statement there can still count the columns SQLite resolved before refusing it.
 - Only SQLite opened through Python's `sqlite3` is traced. A store read with `sqlcipher3` or `apsw`,
   or any plist, protobuf, JSON, XML or LevelDB store, shows as "no SQLite read traced", which is not
   a finding.
