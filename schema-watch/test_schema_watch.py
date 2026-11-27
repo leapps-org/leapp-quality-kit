@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import sqlite3
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -241,6 +242,29 @@ class Review(unittest.TestCase):
                         ('https://github.com/fork/ALEAPP', False), ('https://github.com/me/ALEAPP-old', False)):
             with patch.object(sw, 'run', return_value=Done(url.encode())):
                 self.assertEqual(sw.origin_is('/x', 'me', 'ALEAPP'), ok, url)
+
+
+class Wrapper(unittest.TestCase):
+    def test_run_passes_an_input_body(self):
+        done = sw.run([sys.executable, '-c', 'import sys; print(sys.stdin.read().upper())'], input=b'body')
+        self.assertEqual(done.stdout.strip(), b'BODY')
+
+    def test_issue_repo_names_the_host(self):
+        reg = {'new_key': {'public': True}, 'old_key': {'public': True}, 'secret_key': {'public': True}}
+        calls = []
+        with patch.object(sw, 'run', side_effect=lambda cmd, **kw: calls.append(cmd) or Done()):
+            sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, '/nonexistent/q.md', True, log=lambda *_: None)
+        self.assertIn('github.com/o/ALEAPP', calls[0])
+
+    def test_a_queue_readable_by_others_is_not_written(self):
+        reg = {'new_key': {'public': False}}
+        with tempfile.TemporaryDirectory() as tmp:
+            q = pathlib.Path(tmp) / 'q.md'
+            q.write_text('')
+            q.chmod(0o644)
+            _f, _p, problems = sw.file_issues('o', 'ALEAPP', 'abc', [RESULT], reg, q, False, log=lambda *_: None)
+            self.assertEqual(problems, ['a.py'])
+            self.assertEqual(q.read_text(), '')
 
 
 class State(unittest.TestCase):

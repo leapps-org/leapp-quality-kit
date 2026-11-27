@@ -51,7 +51,9 @@ CORES = ('ALEAPP', 'iLEAPP', 'RLEAPP', 'VLEAPP', 'DLEAPP')
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, check=False, **kw)
+    if 'input' not in kw:
+        kw['stdin'] = subprocess.DEVNULL
+    return subprocess.run(cmd, capture_output=True, check=False, **kw)
 
 
 # ---------------------------------------------------------------- registries
@@ -555,15 +557,16 @@ def check_core(core, repo, keys, reg, cache_dir, tmp_root, jobs, log=print):
             if not m['keys']:
                 results.append({'key': key, 'module': name, 'status': 'no cited keys', 'found': {}})
                 continue
-            if not usable:
-                results.append({'key': key, 'module': name, 'status': 'baseline unreadable', 'found': {},
-                                'baseline_keys': m['keys']})
-                continue
             unread = sorted(k for k in m['keys'] if k in reg and k not in base_index)
             if unread:
                 # A cited key that could not be read now may answer next time; compare nothing until it does.
                 failed.setdefault(key, f'cited key(s) could not be read for {name}: {", ".join(unread)}')
                 results.append({'key': key, 'module': name, 'status': 'baseline incomplete', 'found': {},
+                                'baseline_keys': m['keys']})
+                continue
+            if not usable:
+                # Every cited key is missing from the registries: nothing to compare with, on any run.
+                results.append({'key': key, 'module': name, 'status': 'baseline unreadable', 'found': {},
                                 'baseline_keys': m['keys']})
                 continue
             found = compare(m, stores, usable)
@@ -650,7 +653,8 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
     """One audit-queue issue per changed module, for new keys that allow public metadata. Changes on any
     other key, or with a private cited key behind them, go to the private queue file, never to GitHub.
     Returns (filed, private, modules whose filing failed)."""
-    repo = f'{owner}/{core}'
+    # The host is named, so a gh default host other than github.com cannot receive the search or the issue.
+    repo = f'github.com/{owner}/{core}'
     changed = {}
     for r in results:
         if r['status'] == 'changed':
@@ -690,6 +694,11 @@ def file_issues(owner, core, commit, results, reg, private_queue, dry_run, log=p
                 Path(private_queue).parent.mkdir(parents=True, exist_ok=True)
                 # Owner-only: the file names private keys and their stores.
                 fd = os.open(private_queue, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                if os.fstat(fd).st_mode & 0o077:
+                    os.close(fd)
+                    log(f'  {module}: not written, {private_queue} is readable by others (chmod 600 it)')
+                    problems.append(module)
+                    continue
                 with open(fd, 'a', encoding='utf-8') as f:
                     f.write('\n' + '\n'.join(entry))
                 log(f'  {module}: added to the private queue ({len(hidden)} key(s))')
@@ -768,6 +777,9 @@ def main(argv=None):
     state_file = work / 'state.json'
     state = load_state(state_file)
     if args.init:
+        if absent:
+            print('COULD NOT CHECK: not recording a partial corpus; nothing saved', file=sys.stderr)
+            return 2
         state = {'seen': {k: e['sha256'] for k, e in reg.items()},
                  'initialised': datetime.datetime.now().isoformat(timespec='seconds')}
         save_state(state_file, state)
@@ -795,6 +807,10 @@ def main(argv=None):
     stamp = datetime.datetime.now().strftime('%Y-%m-%d %H%M%S')
     out = Path(args.out) if args.out else work / 'runs' / stamp
     out.mkdir(parents=True, exist_ok=False)
+    # Reports, the index and the state name private keys and stores, so the folders are owner-only.
+    for folder in (work, work / 'index', work / 'tmp', work / 'runs', out):
+        folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder, 0o700)
     print(f'{len(keys)} new key(s): ' + ', '.join(f'{c} {len(v)}' for c, v in sorted(by_core.items()))
           + (f', {len(skipped)} in no core registry' if skipped else ''), flush=True)
     runs, failed, problems = {}, {}, []
@@ -808,7 +824,8 @@ def main(argv=None):
             # Findings from one repository must not be filed in another.
             failed.update({k: f'origin of {repo} is not {who}/{core}' for k in ks})
             continue
-        if run(['git', '-C', str(repo), 'fetch', '-q', 'origin']).returncode != 0:
+        # Named explicitly, so a narrowed fetch refspec cannot leave origin/main stale.
+        if run(['git', '-C', str(repo), 'fetch', '-q', 'origin', '+refs/heads/main:refs/remotes/origin/main']).returncode != 0:
             failed.update({k: 'git fetch failed' for k in ks})
             continue
         print(f'{core}: {len(ks)} key(s)', flush=True)

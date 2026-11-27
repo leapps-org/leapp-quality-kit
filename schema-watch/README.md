@@ -18,7 +18,7 @@ marks keys as seen, so a report-only run leaves them for the daily run. A key th
 checked is left unseen and is tried again the next day: a failed read, a member that could not be
 copied, a cited key that could not be read for a module, or a filing that failed. `--keys` compares
 the keys you name and leaves the state file alone. A registry the corpus roots catalog names but
-that is not there is reported, and the run exits 2.
+that is not there is reported, and the run exits 2; `--init` then saves nothing.
 
 Each key is checked against the core whose registry holds it, from `core_registries` in the config.
 A key in a registry no core is mapped to is logged and skipped.
@@ -81,7 +81,9 @@ A finding goes to GitHub only when the new key and every cited key it was compar
 `"allow_public_metadata": true` in their registry entries, because the finding is computed from
 both. A missing or false value counts as private: the finding is appended to the private queue
 file instead (`private_queue` in the config, default `<work_dir>/schema-watch/private-queue.md`),
-which is created readable by its owner only.
+which is created readable by its owner only. An existing queue file that others can read is not
+written to; the run reports it and exits 2 until the file is `chmod 600`. The `schema-watch` folder
+under `work_dir`, with its index, state and run reports, is kept owner-only too.
 
 Exit 0 means every new key was compared and every filing worked. Exit 2 means something could not
 be checked (config, corpus drive, a key or a filing); the report says what.
