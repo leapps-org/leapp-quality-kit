@@ -54,7 +54,7 @@ trusted key, and lists any unconfirmed drift for that module beside it. Drift on
 files nothing. Each issue body ends with a hidden marker `<!-- number-recheck module=NAME -->`, and a
 module with an open issue carrying its marker is skipped, so repeated runs do not file duplicates.
 `--dry-run` prints what would be filed. A count declared for a run with an input the unattended run
-does not have (a `sample_data` value matching "with the ... key") is listed under "needs an input"
+does not have (a `sample_data` value matching "with the ... key" or "encrypted iTunes backup") is listed under "needs an input"
 and never filed.
 
 ## Weekly run
