@@ -101,7 +101,9 @@ def cited_keys(tree):
     return counts
 
 
-NEEDS_INPUT_RE = re.compile(r"\bwith (?:the|a|an) [^|]*\bkey\b", re.I)
+# A count measured with an input the unattended run does not have: "with the recovery key", or an
+# encrypted iTunes backup read with its password.
+NEEDS_INPUT_RE = re.compile(r"\bwith (?:the|a|an) [^|]*\bkey\b|\bencrypted iTunes backup\b", re.I)
 
 
 def conditional_counts(tree):

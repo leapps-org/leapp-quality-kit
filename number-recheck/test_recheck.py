@@ -71,5 +71,19 @@ class Owner(unittest.TestCase):
         self.assertNotIn('github_owner', seen)
 
 
+class NeedsInput(unittest.TestCase):
+    def test_values_measured_with_an_input_match(self):
+        for value in ('Android 16 | Signal 8.35.4, with the recovery key | 7 rows',
+                      'iOS 14.3 | encrypted iTunes backup | 12 rows'):
+            with self.subTest(value=value):
+                self.assertTrue(recheck.NEEDS_INPUT_RE.search(value))
+
+    def test_plain_counts_do_not_match(self):
+        for value in ('iOS 14.3 | 42 rows', 'Android 14 | 3 rows', 'with a keyboard | 2 rows',
+                      'iTunes backup | 38 rows'):
+            with self.subTest(value=value):
+                self.assertFalse(recheck.NEEDS_INPUT_RE.search(value))
+
+
 if __name__ == '__main__':
     unittest.main()
